@@ -8,13 +8,6 @@ This proprietary script is designed to collect logs via kubectl and generate a g
 - [helm](https://helm.sh/docs/intro/install/)
 
 ## execution
-
-### remotely (faster):
-```
-curl -s https://raw.githubusercontent.com/runai-professional-services/utilities/refs/heads/main/runai_log_collector/start.sh | bash
-```
-
-### locally:
 ```
 chmod +x ./start.sh
 bash ./start.sh
