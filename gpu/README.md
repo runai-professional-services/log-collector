@@ -1,10 +1,17 @@
-# GPU Operator Log Collector
+# Log collector: GPU
 
 Collects NVIDIA GPU Operator logs and cluster GPU information.
+
+## Prerequisites
+
+- `kubectl` with cluster access
+- `helm` (optional, for values extraction)
+- `jq` (optional, for Helm release detection)
 
 ## Usage
 
 ```bash
+chmod +x ./start.sh
 ./start.sh
 ```
 
@@ -19,10 +26,3 @@ Creates `gpu-operator-logs-<timestamp>.tar.gz` containing:
 - Helm values
 - ClusterPolicies and NodeFeatures
 - GPU-related events
-
-## Prerequisites
-
-- `kubectl` with cluster access
-- `helm` (optional, for values extraction)
-- `jq` (optional, for Helm release detection)
-
