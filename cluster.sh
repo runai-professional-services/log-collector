@@ -120,6 +120,45 @@ collect_logs() {
   done
 }
 
+# Function to dump scheduler resources
+dump_scheduler_resource() {
+  local resource_type=$1
+  local resource_singular=$2
+  local output_dir=$3
+  
+  echo "  Dumping ${resource_type}..."
+  k8s_cmd get ${resource_type} > "${output_dir}/${resource_type}_list.txt" 2>/dev/null
+  if [ $? -eq 0 ]; then
+    echo "    ✓ ${resource_type} list saved"
+  else
+    echo "    ⚠ Warning: Failed to collect ${resource_type} list"
+    return
+  fi
+  
+  # Extract individual manifests
+  echo "  Extracting individual ${resource_type} manifests..."
+  k8s_cmd get ${resource_type} --no-headers -o custom-columns=":metadata.name" 2>/dev/null | while read resource; do
+    if [ -n "$resource" ]; then
+      k8s_cmd get ${resource_type} "$resource" -o yaml > "${output_dir}/${resource_singular}_${resource}.yaml" 2>/dev/null
+      echo "    - Extracted ${resource_singular}: $resource"
+    fi
+  done
+}
+
+# Function to collect scheduler information
+collect_scheduler_info() {
+  local LOG_DIR=$1
+  local SCHEDULER_DIR="$LOG_DIR/scheduler"
+  mkdir -p "$SCHEDULER_DIR"
+  
+  echo "=== Collecting Scheduler Resources ==="
+  dump_scheduler_resource "projects.run.ai" "project" "$SCHEDULER_DIR"
+  dump_scheduler_resource "queues.scheduling.run.ai" "queue" "$SCHEDULER_DIR"
+  dump_scheduler_resource "nodepools.run.ai" "nodepool" "$SCHEDULER_DIR"
+  dump_scheduler_resource "departments.scheduling.run.ai" "department" "$SCHEDULER_DIR"
+  echo "  ✓ Scheduler resources collection completed"
+}
+
 # Detect cluster type and set appropriate command
 detect_openshift
 
@@ -236,6 +275,10 @@ for NAMESPACE in "${NAMESPACES[@]}"; do
       echo "Collecting engine config..."
       k8s_cmd -n runai get configs.engine.run.ai engine-config -o yaml > "$LOG_DIR/engine-config.yaml" 2>/dev/null
       echo "  ✓ Engine config saved"
+      
+      # Collect scheduler info for runai namespace
+      echo ""
+      collect_scheduler_info $LOG_DIR
       
     elif [ "$NAMESPACE" == "runai-backend" ]; then
       echo "Collecting pod list for runai-backend namespace..."
@@ -410,3 +453,4 @@ done
 
 echo ""
 echo "🎉 All namespaces processed successfully!"
+
