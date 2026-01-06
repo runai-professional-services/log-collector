@@ -1,9 +1,55 @@
 #!/bin/bash
 
 # Workload Info Dump Script
-VERSION="2.4.0"
+VERSION="2.4.1"
 
 # Removed 'set -e' to allow script to continue when individual commands fail
+
+# Global variable to store the kubectl command (kubectl or oc)
+KUBECTL_CMD=""
+
+# Function to detect if this is an OpenShift cluster and set appropriate CLI
+detect_k8s_cli() {
+  # First check if oc command is available
+  if command -v "oc" &> /dev/null; then
+    # Try to detect OpenShift-specific resources
+    if oc api-resources --api-group=config.openshift.io &> /dev/null; then
+      echo "✅ OpenShift cluster detected, using 'oc'"
+      KUBECTL_CMD="oc"
+      return 0
+    fi
+    
+    # Alternative check: look for OpenShift-specific API groups
+    if oc api-versions | grep -q "config.openshift.io\|operator.openshift.io\|route.openshift.io" 2>/dev/null; then
+      echo "✅ OpenShift cluster detected, using 'oc'"
+      KUBECTL_CMD="oc"
+      return 0
+    fi
+  fi
+  
+  # If oc is not available or OpenShift not detected, check if kubectl works
+  if command -v "kubectl" &> /dev/null; then
+    # Double-check by trying to detect OpenShift APIs with kubectl
+    if kubectl api-versions | grep -q "config.openshift.io\|operator.openshift.io\|route.openshift.io" 2>/dev/null; then
+      echo "✅ OpenShift cluster detected (using kubectl)"
+      KUBECTL_CMD="kubectl"
+      return 0
+    fi
+    
+    echo "✅ Standard Kubernetes cluster detected, using 'kubectl'"
+    KUBECTL_CMD="kubectl"
+    return 0
+  fi
+  
+  echo "❌ Error: Neither 'kubectl' nor 'oc' command found."
+  echo "Please install one of them and ensure it's accessible in PATH"
+  exit 1
+}
+
+# Function to execute kubectl/oc commands
+k8s_cmd() {
+  $KUBECTL_CMD "$@"
+}
 
 usage() {
   echo "Workload Info Dump Script v${VERSION}"
@@ -24,7 +70,7 @@ usage() {
   exit 1
 }
 
-# Parse arguments first to handle --version before kubectl checks
+# Parse arguments first to handle --version before kubectl/oc checks
 while [[ $# -gt 0 ]]; do
   key="$1"
   case $key in
@@ -56,21 +102,16 @@ if [[ -z "$PROJECT" || -z "$WORKLOAD" || -z "$TYPE" ]]; then
   usage
 fi
 
-# Check if kubectl exists and is accessible
-if ! command -v kubectl &> /dev/null; then
-    echo "Error: kubectl is not installed or not in PATH"
-    echo "Please install kubectl and ensure it's accessible"
-    exit 1
-fi
-echo "✅ kubectl found and accessible"
+# Detect cluster type and set appropriate CLI command (kubectl or oc)
+detect_k8s_cli
 
-# Test kubectl connectivity
-if ! kubectl cluster-info &> /dev/null; then
-    echo "Error: kubectl cannot connect to cluster"
+# Test cluster connectivity
+if ! k8s_cmd cluster-info &> /dev/null; then
+    echo "❌ Error: $KUBECTL_CMD cannot connect to cluster"
     echo "Please check your kubeconfig and cluster connectivity"
     exit 1
 fi
-echo "✅ kubectl can connect to cluster"
+echo "✅ $KUBECTL_CMD can connect to cluster"
 
 # Display script version
 echo ""
@@ -106,7 +147,7 @@ get_workload_yaml() {
   
   local workload_yaml="${workload}_${type_safe}_workload.yaml"
   echo "  📄 Getting $canonical_type YAML..." >&2
-  if kubectl -n "$NAMESPACE" get "$canonical_type" "$workload" -o yaml > "$workload_yaml" 2>/dev/null; then
+  if k8s_cmd -n "$NAMESPACE" get "$canonical_type" "$workload" -o yaml > "$workload_yaml" 2>/dev/null; then
     echo "    ✅ Workload YAML retrieved" >&2
     echo "$workload_yaml"
   else
@@ -122,7 +163,7 @@ get_runaijob_yaml() {
   
   local runaijob_yaml="${workload}_${type_safe}_runaijob.yaml"
   echo "  📄 Getting RunAIJob YAML..." >&2
-  if kubectl -n "$NAMESPACE" get rj "$workload" -o yaml > "$runaijob_yaml" 2>/dev/null; then
+  if k8s_cmd -n "$NAMESPACE" get rj "$workload" -o yaml > "$runaijob_yaml" 2>/dev/null; then
     # Check if file is empty or contains no valid content
     if [[ ! -s "$runaijob_yaml" ]]; then
       echo "    ❌ RunAIJob resource returned empty content" >&2
@@ -144,7 +185,7 @@ get_pods_and_containers_info() {
   local workload="$1"
   
   # Get all pods for this workload in one call
-  local pods_json=$(kubectl -n "$NAMESPACE" get pod -l workloadName=$workload -o json 2>/dev/null)
+  local pods_json=$(k8s_cmd -n "$NAMESPACE" get pod -l workloadName=$workload -o json 2>/dev/null)
   
   if [[ -z "$pods_json" ]] || [[ "$pods_json" == "null" ]]; then
     echo "    ❌ No pods found for workload: $workload" >&2
@@ -156,11 +197,11 @@ get_pods_and_containers_info() {
     # Use jq if available for better JSON parsing
     echo "$pods_json" | jq -r '.items[] | "\(.metadata.name)|\([(.spec.initContainers//[])[]?.name, .spec.containers[].name] | join(" "))"'
   else
-    # Fallback to kubectl jsonpath if jq is not available
-    local pod_names=$(echo "$pods_json" | kubectl get -f - -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    # Fallback to k8s_cmd jsonpath if jq is not available
+    local pod_names=$(echo "$pods_json" | k8s_cmd get -f - -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
     
     for pod in $pod_names; do
-      local containers=$(kubectl -n "$NAMESPACE" get pod "$pod" -o jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}' 2>/dev/null)
+      local containers=$(k8s_cmd -n "$NAMESPACE" get pod "$pod" -o jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}' 2>/dev/null)
       echo "${pod}|${containers}"
     done
   fi
@@ -193,7 +234,7 @@ process_pods_unified() {
     
     # 1. Get Pod YAML
     local pod_yaml="${workload}_${type_safe}_pod_${pod}.yaml"
-    if kubectl -n "$NAMESPACE" get pod "$pod" -o yaml > "$pod_yaml" 2>/dev/null; then
+    if k8s_cmd -n "$NAMESPACE" get pod "$pod" -o yaml > "$pod_yaml" 2>/dev/null; then
       echo "      ✅ Pod YAML retrieved: $pod" >&2
       output_files+=("$pod_yaml")
     else
@@ -202,7 +243,7 @@ process_pods_unified() {
     
     # 2. Get Pod Description
     local pod_describe_file="${workload}_${type_safe}_pod_${pod}_describe.txt"
-    if kubectl -n "$NAMESPACE" describe pod "$pod" > "$pod_describe_file" 2>/dev/null; then
+    if k8s_cmd -n "$NAMESPACE" describe pod "$pod" > "$pod_describe_file" 2>/dev/null; then
       echo "      ✅ Pod description retrieved: $pod" >&2
       output_files+=("$pod_describe_file")
     else
@@ -216,7 +257,7 @@ process_pods_unified() {
       
       # Get container logs
       local log_file="${workload}_${type_safe}_pod_${pod}_logs_${container}.log"
-      if kubectl -n "$NAMESPACE" logs "$pod" -c "$container" > "$log_file" 2>/dev/null; then
+      if k8s_cmd -n "$NAMESPACE" logs "$pod" -c "$container" > "$log_file" 2>/dev/null; then
         echo "      ✅ Logs retrieved: $container (pod: $pod)" >&2
         output_files+=("$log_file")
       else
@@ -225,7 +266,7 @@ process_pods_unified() {
       
       # Get nvidia-smi output
       local nvidia_file="${workload}_${type_safe}_pod_${pod}_nvidia_smi_${container}.txt"
-      if kubectl -n "$NAMESPACE" exec "$pod" -c "$container" -- nvidia-smi > "$nvidia_file" 2>/dev/null; then
+      if k8s_cmd -n "$NAMESPACE" exec "$pod" -c "$container" -- nvidia-smi > "$nvidia_file" 2>/dev/null; then
         echo "      ✅ nvidia-smi retrieved: $container (pod: $pod)" >&2
         output_files+=("$nvidia_file")
         ((total_nvidia_files++))
@@ -258,7 +299,7 @@ get_podgroup_yaml() {
   
   local podgroup_yaml="${workload}_${type_safe}_podgroup.yaml"
   echo "  📄 Getting PodGroup YAML..." >&2
-  if kubectl -n "$NAMESPACE" get pg -l workloadName=$workload -o yaml > "$podgroup_yaml" 2>/dev/null; then
+  if k8s_cmd -n "$NAMESPACE" get pg -l workloadName=$workload -o yaml > "$podgroup_yaml" 2>/dev/null; then
     echo "    ✅ PodGroup YAML retrieved" >&2
     echo "$podgroup_yaml"
   else
@@ -274,7 +315,7 @@ get_ksvc_yaml() {
   
   local ksvc_spec="${workload}_${type_safe}_ksvc.yaml"
   echo "  📄 Getting KSVC YAML..." >&2
-  if kubectl -n "$NAMESPACE" get ksvc "$workload" -o yaml > "$ksvc_spec" 2>/dev/null; then
+  if k8s_cmd -n "$NAMESPACE" get ksvc "$workload" -o yaml > "$ksvc_spec" 2>/dev/null; then
     echo "    ✅ KSVC YAML retrieved" >&2
     echo "$ksvc_spec"
   else
@@ -290,7 +331,7 @@ get_all_pods_list() {
   
   local pod_list_file="${workload}_${type_safe}_all_pods_list.txt"
   echo "  📄 Getting pod list for all pods in namespace..." >&2
-  if kubectl -n "$NAMESPACE" get pods -o wide > "$pod_list_file" 2>/dev/null; then
+  if k8s_cmd -n "$NAMESPACE" get pods -o wide > "$pod_list_file" 2>/dev/null; then
     echo "    ✅ Pod list retrieved" >&2
     echo "$pod_list_file"
   else
@@ -306,7 +347,7 @@ get_all_configmaps() {
   
   local configmap_file="${workload}_${type_safe}_all_configmaps.yaml"
   echo "  📄 Getting all ConfigMaps in namespace..." >&2
-  if kubectl -n "$NAMESPACE" get configmap -o yaml > "$configmap_file" 2>/dev/null; then
+  if k8s_cmd -n "$NAMESPACE" get configmap -o yaml > "$configmap_file" 2>/dev/null; then
     echo "    ✅ ConfigMaps retrieved" >&2
     echo "$configmap_file"
   else
@@ -322,7 +363,7 @@ get_all_pvcs() {
   
   local pvc_file="${workload}_${type_safe}_all_pvcs.yaml"
   echo "  📄 Getting all PVCs in namespace..." >&2
-  if kubectl -n "$NAMESPACE" get pvc -o yaml > "$pvc_file" 2>/dev/null; then
+  if k8s_cmd -n "$NAMESPACE" get pvc -o yaml > "$pvc_file" 2>/dev/null; then
     echo "    ✅ PVCs retrieved" >&2
     echo "$pvc_file"
   else
@@ -338,7 +379,7 @@ get_all_services() {
   
   local service_file="${workload}_${type_safe}_all_services.yaml"
   echo "  📄 Getting all Services in namespace..." >&2
-  if kubectl -n "$NAMESPACE" get svc -o yaml > "$service_file" 2>/dev/null; then
+  if k8s_cmd -n "$NAMESPACE" get svc -o yaml > "$service_file" 2>/dev/null; then
     echo "    ✅ Services retrieved" >&2
     echo "$service_file"
   else
@@ -354,7 +395,7 @@ get_all_ingresses() {
   
   local ingress_file="${workload}_${type_safe}_all_ingresses.yaml"
   echo "  📄 Getting all Ingresses in namespace..." >&2
-  if kubectl -n "$NAMESPACE" get ingress -o yaml > "$ingress_file" 2>/dev/null; then
+  if k8s_cmd -n "$NAMESPACE" get ingress -o yaml > "$ingress_file" 2>/dev/null; then
     echo "    ✅ Ingresses retrieved" >&2
     echo "$ingress_file"
   else
@@ -370,7 +411,7 @@ get_all_routes() {
   
   local route_file="${workload}_${type_safe}_all_routes.yaml"
   echo "  📄 Getting all Routes in namespace..." >&2
-  if kubectl -n "$NAMESPACE" get route -o yaml > "$route_file" 2>/dev/null; then
+  if k8s_cmd -n "$NAMESPACE" get route -o yaml > "$route_file" 2>/dev/null; then
     echo "    ✅ Routes retrieved" >&2
     echo "$route_file"
   else
@@ -382,7 +423,7 @@ get_all_routes() {
 # Arguments have already been parsed and validated above
 
 # Lookup namespace from project
-NAMESPACE=$(kubectl get ns -l runai/queue="$PROJECT" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+NAMESPACE=$(k8s_cmd get ns -l runai/queue="$PROJECT" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
 if [[ -z "$NAMESPACE" ]]; then
   echo "❌ No namespace found for project: $PROJECT"
   echo "Please check that the project exists and is accessible"
@@ -422,7 +463,7 @@ if runaijob_yaml=$(get_runaijob_yaml "$WORKLOAD" "$TYPE_SAFE"); then
   OUTPUT_FILES+=("$runaijob_yaml")
 fi
 
-# Centralized pod and container discovery (OPTIMIZATION: single kubectl call)
+# Centralized pod and container discovery (OPTIMIZATION: single k8s_cmd call)
 echo "  🔍 Discovering pods and containers..." >&2
 PODS_INFO=$(get_pods_and_containers_info "$WORKLOAD")
 if [[ $? -eq 0 && -n "$PODS_INFO" ]]; then
