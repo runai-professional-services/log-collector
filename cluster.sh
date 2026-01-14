@@ -297,6 +297,150 @@ for NAMESPACE in "${NAMESPACES[@]}"; do
       k8s_cmd -n runai-backend get secrets -o yaml > "$LOG_DIR/secrets_runai-backend.yaml" 2>/dev/null
       echo "  ✓ All Secrets saved"
       
+      echo "Collecting IDP settings from RunAI API..."
+      # Check if curl and jq are available
+      if command -v curl &> /dev/null && command -v jq &> /dev/null; then
+        # Get admin credentials and control plane URL
+        RUNAI_USERNAME=$(k8s_cmd get cm runai-backend-tenants-manager -n runai-backend -o jsonpath='{.data.ADMIN_USERNAME}' 2>/dev/null)
+        RUNAI_PASSWORD=$(k8s_cmd get secret runai-backend-tenants-manager -n runai-backend -o jsonpath='{.data.ADMIN_PASSWORD}' 2>/dev/null | base64 -d)
+        RUNAI_CTRL_PLANE=$(k8s_cmd get cm runai-backend-tenants-manager -n runai-backend -o jsonpath='{.data.AUTH_SERVICE_URL}' 2>/dev/null)
+        
+        if [ -n "$RUNAI_USERNAME" ] && [ -n "$RUNAI_PASSWORD" ] && [ -n "$RUNAI_CTRL_PLANE" ]; then
+          echo "  Retrieved RunAI credentials and control plane URL"
+          
+          # Get authentication token
+          RUNAI_TOKEN=$(curl -s -X POST "$RUNAI_CTRL_PLANE/api/v1/token" \
+            --header 'Accept: */*' \
+            --header 'Content-Type: application/json' \
+            --data-raw "{\"grantType\": \"password\", \"clientID\": \"cli\", \"username\": \"$RUNAI_USERNAME\", \"password\": \"$RUNAI_PASSWORD\"}" 2>/dev/null | jq -r .accessToken)
+          
+          if [ -n "$RUNAI_TOKEN" ] && [ "$RUNAI_TOKEN" != "null" ]; then
+            echo "  ✓ Successfully obtained API token"
+            
+            # Get IDP settings with HTTP status code
+            HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" "$RUNAI_CTRL_PLANE/api/v1/idps" \
+              -H 'Accept: application/json, text/plain, */*' \
+              -H "Authorization: Bearer $RUNAI_TOKEN" 2>/dev/null)
+            
+            HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+            HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+            
+            if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 201 ]; then
+              # Check if response is valid JSON and not empty
+              if echo "$HTTP_BODY" | jq empty 2>/dev/null; then
+                # Check if it's an empty array or has content
+                IDP_COUNT=$(echo "$HTTP_BODY" | jq 'length' 2>/dev/null)
+                
+                if [ "$IDP_COUNT" -eq 0 ]; then
+                  echo "  ℹ No IDP integration configured (empty response)"
+                  echo "$HTTP_BODY" > "$LOG_DIR/idp-settings.json"
+                  echo "  ✓ Empty IDP settings saved to idp-settings.json"
+                else
+                  echo "$HTTP_BODY" > "$LOG_DIR/idp-settings.json"
+                  echo "  ✓ IDP settings saved to idp-settings.json (found $IDP_COUNT IDP configuration(s))"
+                fi
+              else
+                echo "  ⚠ Warning: Received invalid JSON response from IDP API"
+                echo "$HTTP_BODY" > "$LOG_DIR/idp-settings-error.txt"
+                echo "  Error response saved to idp-settings-error.txt"
+              fi
+            else
+              echo "  ⚠ Warning: Failed to retrieve IDP settings (HTTP $HTTP_CODE)"
+              echo "$HTTP_BODY" > "$LOG_DIR/idp-settings-error.txt"
+              echo "  Error response saved to idp-settings-error.txt"
+            fi
+            
+            # Get Clusters information
+            echo "Collecting Clusters information from RunAI API..."
+            HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" "$RUNAI_CTRL_PLANE/api/v1/clusters" \
+              -H 'Accept: application/json, text/plain, */*' \
+              -H "Authorization: Bearer $RUNAI_TOKEN" 2>/dev/null)
+            
+            HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+            HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+            
+            if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 201 ]; then
+              if echo "$HTTP_BODY" | jq empty 2>/dev/null; then
+                echo "$HTTP_BODY" > "$LOG_DIR/clusters.json"
+                CLUSTER_COUNT=$(echo "$HTTP_BODY" | jq 'length' 2>/dev/null)
+                if [ -n "$CLUSTER_COUNT" ]; then
+                  echo "  ✓ Clusters information saved to clusters.json (found $CLUSTER_COUNT cluster(s))"
+                else
+                  echo "  ✓ Clusters information saved to clusters.json"
+                fi
+              else
+                echo "  ⚠ Warning: Received invalid JSON response from Clusters API"
+                echo "$HTTP_BODY" > "$LOG_DIR/clusters-error.txt"
+              fi
+            else
+              echo "  ⚠ Warning: Failed to retrieve Clusters information (HTTP $HTTP_CODE)"
+              echo "$HTTP_BODY" > "$LOG_DIR/clusters-error.txt"
+            fi
+            
+            # Get Tenants information
+            echo "Collecting Tenants information from RunAI API..."
+            HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" "$RUNAI_CTRL_PLANE/api/v1/tenants" \
+              -H 'Accept: application/json, text/plain, */*' \
+              -H "Authorization: Bearer $RUNAI_TOKEN" 2>/dev/null)
+            
+            HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+            HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+            
+            if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 201 ]; then
+              if echo "$HTTP_BODY" | jq empty 2>/dev/null; then
+                echo "$HTTP_BODY" > "$LOG_DIR/tenants.json"
+                TENANT_COUNT=$(echo "$HTTP_BODY" | jq 'length' 2>/dev/null)
+                if [ -n "$TENANT_COUNT" ]; then
+                  echo "  ✓ Tenants information saved to tenants.json (found $TENANT_COUNT tenant(s))"
+                else
+                  echo "  ✓ Tenants information saved to tenants.json"
+                fi
+              else
+                echo "  ⚠ Warning: Received invalid JSON response from Tenants API"
+                echo "$HTTP_BODY" > "$LOG_DIR/tenants-error.txt"
+              fi
+            else
+              echo "  ⚠ Warning: Failed to retrieve Tenants information (HTTP $HTTP_CODE)"
+              echo "$HTTP_BODY" > "$LOG_DIR/tenants-error.txt"
+            fi
+            
+            # Get K8s Settings information
+            echo "Collecting K8s Settings from RunAI API..."
+            HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" "$RUNAI_CTRL_PLANE/v1/k8s/setting" \
+              -H 'Accept: application/json, text/plain, */*' \
+              -H "Authorization: Bearer $RUNAI_TOKEN" 2>/dev/null)
+            
+            HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+            HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+            
+            if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 201 ]; then
+              if echo "$HTTP_BODY" | jq empty 2>/dev/null; then
+                echo "$HTTP_BODY" > "$LOG_DIR/k8s-settings.json"
+                SETTING_COUNT=$(echo "$HTTP_BODY" | jq 'length' 2>/dev/null)
+                if [ -n "$SETTING_COUNT" ]; then
+                  echo "  ✓ K8s Settings saved to k8s-settings.json (found $SETTING_COUNT setting(s))"
+                else
+                  echo "  ✓ K8s Settings saved to k8s-settings.json"
+                fi
+              else
+                echo "  ⚠ Warning: Received invalid JSON response from K8s Settings API"
+                echo "$HTTP_BODY" > "$LOG_DIR/k8s-settings-error.txt"
+              fi
+            else
+              echo "  ⚠ Warning: Failed to retrieve K8s Settings (HTTP $HTTP_CODE)"
+              echo "$HTTP_BODY" > "$LOG_DIR/k8s-settings-error.txt"
+            fi
+            
+          else
+            echo "  ⚠ Warning: Failed to obtain API token"
+          fi
+        else
+          echo "  ⚠ Warning: Could not retrieve RunAI credentials or control plane URL"
+        fi
+      else
+        echo "  ⚠ Warning: curl or jq not available, skipping API data collection"
+      fi
+      
     elif [ "$NAMESPACE" == "knative-serving" ]; then
       echo "Collecting pod list for knative-serving namespace..."
       k8s_cmd -n knative-serving get pods -o wide > "$LOG_DIR/pod-list_knative-serving.txt" 2>/dev/null
