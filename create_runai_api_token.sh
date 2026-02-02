@@ -16,12 +16,23 @@ echo "RUNAI_ADMIN_PASSWORD: $RUNAI_ADMIN_PASSWORD"
 echo "RUNAI_CTRL_PLANE_URL: $RUNAI_CTRL_PLANE_URL"
 
 # Get API token
-RUNAI_TOKEN=$(curl -s -X POST "$RUNAI_CTRL_PLANE_URL/api/v1/token" \
+API_RESPONSE=$(curl -s -X POST "$RUNAI_CTRL_PLANE_URL/api/v1/token" \
   --header 'Accept: */*' \
   --header 'Content-Type: application/json' \
-  --data-raw "{\"grantType\": \"password\", \"clientID\": \"cli\", \"username\": \"$RUNAI_ADMIN_USERNAME\", \"password\": \"$RUNAI_ADMIN_PASSWORD\"}" | jq -r .accessToken)
+  --data-raw "{\"grantType\": \"password\", \"clientID\": \"cli\", \"username\": \"$RUNAI_ADMIN_USERNAME\", \"password\": \"$RUNAI_ADMIN_PASSWORD\"}")
+
+# Parse response
+RUNAI_TOKEN=$(echo "$API_RESPONSE" | jq -r '.accessToken // empty' 2>/dev/null)
+ERROR_MESSAGE=$(echo "$API_RESPONSE" | jq -r '.message // empty' 2>/dev/null)
+ERROR_CODE=$(echo "$API_RESPONSE" | jq -r '.code // empty' 2>/dev/null)
 
 # Validate token
-[ -z "$RUNAI_TOKEN" ] || [ "$RUNAI_TOKEN" = "null" ] && echo "Error: Failed to retrieve API token" && exit 1
+if [ -z "$RUNAI_TOKEN" ]; then
+  echo "Error: Failed to retrieve API token"
+  [ -n "$ERROR_CODE" ] && echo "Error Code: $ERROR_CODE"
+  [ -n "$ERROR_MESSAGE" ] && echo "Error Message: $ERROR_MESSAGE"
+  [ -z "$ERROR_MESSAGE" ] && echo "API Response: $API_RESPONSE"
+  exit 1
+fi
 
 echo "RUNAI_TOKEN: $RUNAI_TOKEN"
