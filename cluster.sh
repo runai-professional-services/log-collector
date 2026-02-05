@@ -256,6 +256,16 @@ for NAMESPACE in "${NAMESPACES[@]}"; do
       k8s_cmd -n runai get secrets -o yaml > "$LOG_DIR/secrets_runai.yaml" 2>/dev/null
       echo "  ✓ All Secrets saved"
       
+      if [ "$KUBECTL_CMD" == "oc" ]; then
+        echo "Collecting all Routes (OpenShift)..."
+        k8s_cmd -n runai get routes -o yaml > "$LOG_DIR/routes_runai.yaml" 2>/dev/null
+        echo "  ✓ All Routes saved"
+      else
+        echo "Collecting all Ingresses..."
+        k8s_cmd -n runai get ingress -o yaml > "$LOG_DIR/ingress_runai.yaml" 2>/dev/null
+        echo "  ✓ All Ingresses saved"
+      fi
+      
       echo "Collecting pod list for runai namespace..."
       k8s_cmd -n runai get pods -o wide > "$LOG_DIR/pod-list_runai.txt" 2>/dev/null
       echo "  ✓ Pod list saved"
@@ -296,6 +306,16 @@ for NAMESPACE in "${NAMESPACES[@]}"; do
       echo "Collecting all Secrets..."
       k8s_cmd -n runai-backend get secrets -o yaml > "$LOG_DIR/secrets_runai-backend.yaml" 2>/dev/null
       echo "  ✓ All Secrets saved"
+      
+      if [ "$KUBECTL_CMD" == "oc" ]; then
+        echo "Collecting all Routes (OpenShift)..."
+        k8s_cmd -n runai-backend get routes -o yaml > "$LOG_DIR/routes_runai-backend.yaml" 2>/dev/null
+        echo "  ✓ All Routes saved"
+      else
+        echo "Collecting all Ingresses..."
+        k8s_cmd -n runai-backend get ingress -o yaml > "$LOG_DIR/ingress_runai-backend.yaml" 2>/dev/null
+        echo "  ✓ All Ingresses saved"
+      fi
       
       echo "Collecting IDP settings from RunAI API..."
       # Check if curl and jq are available
