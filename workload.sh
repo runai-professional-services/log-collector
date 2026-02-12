@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Workload Info Dump Script
-VERSION="2.4.1"
+VERSION="2.5.1"
 
 # Removed 'set -e' to allow script to continue when individual commands fail
 
@@ -10,35 +10,50 @@ KUBECTL_CMD=""
 
 # Function to detect if this is an OpenShift cluster and set appropriate CLI
 detect_k8s_cli() {
-  # First check if oc command is available
+  local is_openshift=false
+  
+  # First, detect if this is an OpenShift cluster by checking for OpenShift-specific API groups
+  # Try with oc first if available
   if command -v "oc" &> /dev/null; then
-    # Try to detect OpenShift-specific resources
-    if oc api-resources --api-group=config.openshift.io &> /dev/null; then
-      echo "✅ OpenShift cluster detected, using 'oc'"
-      KUBECTL_CMD="oc"
-      return 0
-    fi
-    
-    # Alternative check: look for OpenShift-specific API groups
-    if oc api-versions | grep -q "config.openshift.io\|operator.openshift.io\|route.openshift.io" 2>/dev/null; then
-      echo "✅ OpenShift cluster detected, using 'oc'"
-      KUBECTL_CMD="oc"
-      return 0
+    # Check if any OpenShift-specific resources actually exist
+    local oc_resources=$(oc api-resources --api-group=config.openshift.io 2>/dev/null | tail -n +2)
+    if [[ -n "$oc_resources" ]]; then
+      is_openshift=true
+    elif oc api-versions 2>/dev/null | grep -q "config.openshift.io\|operator.openshift.io\|route.openshift.io"; then
+      is_openshift=true
     fi
   fi
   
-  # If oc is not available or OpenShift not detected, check if kubectl works
-  if command -v "kubectl" &> /dev/null; then
-    # Double-check by trying to detect OpenShift APIs with kubectl
-    if kubectl api-versions | grep -q "config.openshift.io\|operator.openshift.io\|route.openshift.io" 2>/dev/null; then
-      echo "✅ OpenShift cluster detected (using kubectl)"
+  # Also check with kubectl if oc didn't find OpenShift
+  if [[ "$is_openshift" == "false" ]] && command -v "kubectl" &> /dev/null; then
+    if kubectl api-versions 2>/dev/null | grep -q "config.openshift.io\|operator.openshift.io\|route.openshift.io"; then
+      is_openshift=true
+    fi
+  fi
+  
+  # Now decide which CLI to use based on cluster type and available commands
+  if [[ "$is_openshift" == "true" ]]; then
+    # OpenShift cluster detected - prefer oc if available
+    if command -v "oc" &> /dev/null; then
+      echo "✅ OpenShift cluster detected, using 'oc'"
+      KUBECTL_CMD="oc"
+      return 0
+    elif command -v "kubectl" &> /dev/null; then
+      echo "✅ OpenShift cluster detected, using 'kubectl'"
       KUBECTL_CMD="kubectl"
       return 0
     fi
-    
-    echo "✅ Standard Kubernetes cluster detected, using 'kubectl'"
-    KUBECTL_CMD="kubectl"
-    return 0
+  else
+    # Standard Kubernetes cluster - prefer kubectl if available
+    if command -v "kubectl" &> /dev/null; then
+      echo "✅ Standard Kubernetes cluster detected, using 'kubectl'"
+      KUBECTL_CMD="kubectl"
+      return 0
+    elif command -v "oc" &> /dev/null; then
+      echo "✅ Standard Kubernetes cluster detected, using 'oc'"
+      KUBECTL_CMD="oc"
+      return 0
+    fi
   fi
   
   echo "❌ Error: Neither 'kubectl' nor 'oc' command found."
@@ -117,6 +132,7 @@ echo "✅ $KUBECTL_CMD can connect to cluster"
 echo ""
 echo "🔧 Workload Info Dump Script v${VERSION}"
 echo "   Enhanced for resilient resource collection with unified pod processing"
+echo "   Now supports External Workloads (non-RunAI workloads using RunAI scheduler)"
 echo ""
 
 # Function to map type aliases to canonical k8s resource names
@@ -183,12 +199,13 @@ get_runaijob_yaml() {
 # Function to get pods and containers information (centralized discovery)
 get_pods_and_containers_info() {
   local workload="$1"
+  local label_selector="${2:-workloadName=$workload}"  # Allow custom label selector
   
   # Get all pods for this workload in one call
-  local pods_json=$(k8s_cmd -n "$NAMESPACE" get pod -l workloadName=$workload -o json 2>/dev/null)
+  local pods_json=$(k8s_cmd -n "$NAMESPACE" get pod -l "$label_selector" -o json 2>/dev/null)
   
   if [[ -z "$pods_json" ]] || [[ "$pods_json" == "null" ]]; then
-    echo "    ❌ No pods found for workload: $workload" >&2
+    echo "    ❌ No pods found for workload: $workload (selector: $label_selector)" >&2
     return 1
   fi
   
@@ -420,6 +437,100 @@ get_all_routes() {
   fi
 }
 
+# ============================================================================
+# External Workload Functions
+# ============================================================================
+
+# Function to find the ExternalWorkload CR name for a given workload
+# External workloads are named with pattern: ew-<type>-<originalWorkloadName>
+find_external_workload_name() {
+  local workload="$1"
+  
+  echo "  🔍 Searching for ExternalWorkload matching '$workload'..." >&2
+  
+  # First, try to find by the originalWorkloadName in spec
+  local ew_name=$(k8s_cmd -n "$NAMESPACE" get externalworkload -o json 2>/dev/null | \
+    grep -B 50 "\"originalWorkloadName\": \"$workload\"" | \
+    grep "\"name\":" | head -1 | sed 's/.*"name": "\([^"]*\)".*/\1/')
+  
+  if [[ -n "$ew_name" ]]; then
+    echo "    ✅ Found ExternalWorkload: $ew_name" >&2
+    echo "$ew_name"
+    return 0
+  fi
+  
+  # Fallback: try common naming patterns
+  for pattern in "ew-deployment-${workload}" "ew-statefulset-${workload}" "ew-daemonset-${workload}" "ew-${workload}"; do
+    if k8s_cmd -n "$NAMESPACE" get externalworkload "$pattern" &>/dev/null; then
+      echo "    ✅ Found ExternalWorkload: $pattern" >&2
+      echo "$pattern"
+      return 0
+    fi
+  done
+  
+  echo "    ❌ No ExternalWorkload found for: $workload" >&2
+  return 1
+}
+
+# Function to extract owner resource info from ExternalWorkload
+get_external_workload_owner_info() {
+  local ew_name="$1"
+  
+  echo "  🔍 Extracting owner resource info from ExternalWorkload..." >&2
+  
+  # Get the ExternalWorkload YAML to extract owner info
+  local ew_yaml=$(k8s_cmd -n "$NAMESPACE" get externalworkload "$ew_name" -o yaml 2>/dev/null)
+  
+  if [[ -z "$ew_yaml" ]]; then
+    echo "    ❌ Failed to retrieve ExternalWorkload YAML" >&2
+    return 1
+  fi
+  
+  # Extract owner reference information using grep/sed
+  local owner_kind=$(echo "$ew_yaml" | grep -A 10 "ownerReferences:" | grep "kind:" | head -1 | sed 's/.*kind: \(.*\)/\1/' | tr -d '[:space:]')
+  local owner_name=$(echo "$ew_yaml" | grep -A 10 "ownerReferences:" | grep "name:" | head -1 | sed 's/.*name: \(.*\)/\1/' | tr -d '[:space:]')
+  local owner_uid=$(echo "$ew_yaml" | grep -A 10 "ownerReferences:" | grep "uid:" | head -1 | sed 's/.*uid: \(.*\)/\1/' | tr -d '[:space:]')
+  
+  # Fallback: try spec.type and spec.originalWorkloadName if ownerReferences not found
+  if [[ -z "$owner_kind" ]] || [[ -z "$owner_name" ]]; then
+    owner_kind=$(echo "$ew_yaml" | grep "^  type:" | head -1 | sed 's/.*type: \(.*\)/\1/' | tr -d '[:space:]')
+    owner_name=$(echo "$ew_yaml" | grep "^  originalWorkloadName:" | head -1 | sed 's/.*originalWorkloadName: \(.*\)/\1/' | tr -d '[:space:]')
+    owner_uid=$(echo "$ew_yaml" | grep "^  originalWorkloadUID:" | head -1 | sed 's/.*originalWorkloadUID: \(.*\)/\1/' | tr -d '[:space:]')
+  fi
+  
+  if [[ -z "$owner_kind" ]] || [[ -z "$owner_name" ]]; then
+    echo "    ❌ Failed to extract owner resource info" >&2
+    return 1
+  fi
+  
+  echo "    ✅ Owner: $owner_kind/$owner_name (UID: $owner_uid)" >&2
+  
+  # Return format: kind|name|uid
+  echo "${owner_kind}|${owner_name}|${owner_uid}"
+}
+
+# Function to get owner resource YAML for external workload
+get_external_workload_owner_yaml() {
+  local workload="$1"
+  local type_safe="$2"
+  local owner_kind="$3"
+  local owner_name="$4"
+  
+  # Convert kind to lowercase for kubectl command
+  local resource_type=$(echo "$owner_kind" | tr '[:upper:]' '[:lower:]')
+  
+  local owner_yaml="${workload}_${type_safe}_owner_${resource_type}_${owner_name}.yaml"
+  echo "  📄 Getting owner resource YAML ($owner_kind/$owner_name)..." >&2
+  
+  if k8s_cmd -n "$NAMESPACE" get "$resource_type" "$owner_name" -o yaml > "$owner_yaml" 2>/dev/null; then
+    echo "    ✅ Owner resource YAML retrieved" >&2
+    echo "$owner_yaml"
+  else
+    echo "    ❌ Failed to retrieve owner resource YAML" >&2
+    return 1
+  fi
+}
+
 # Arguments have already been parsed and validated above
 
 # Lookup namespace from project
@@ -453,19 +564,63 @@ ARCHIVE="${PROJECT}_${TYPE_SAFE}_${WORKLOAD}_v${VERSION_SAFE}_${TIMESTAMP}.tar.g
 echo "📁 Starting collection process..."
 echo ""
 
-# Get workload YAML
-if workload_yaml=$(get_workload_yaml "$WORKLOAD" "$CANONICAL_TYPE" "$TYPE_SAFE"); then
-  OUTPUT_FILES+=("$workload_yaml")
+# Initialize variables for external workload handling
+IS_EXTERNAL_WORKLOAD=false
+EW_OWNER_UID=""
+EW_WORKLOAD_NAME=""
+
+# Check if this is an external workload and handle accordingly
+if [[ "$CANONICAL_TYPE" == "externalworkloads" ]]; then
+  echo "  🔧 Detected External Workload type" >&2
+  IS_EXTERNAL_WORKLOAD=true
+  
+  # Find the actual ExternalWorkload CR name (might have prefix)
+  if EW_WORKLOAD_NAME=$(find_external_workload_name "$WORKLOAD"); then
+    echo "    ✅ ExternalWorkload identified: $EW_WORKLOAD_NAME" >&2
+    
+    # Get ExternalWorkload YAML with the correct name
+    if workload_yaml=$(get_workload_yaml "$EW_WORKLOAD_NAME" "$CANONICAL_TYPE" "$TYPE_SAFE"); then
+      OUTPUT_FILES+=("$workload_yaml")
+    fi
+    
+    # Get owner resource information
+    if owner_info=$(get_external_workload_owner_info "$EW_WORKLOAD_NAME"); then
+      IFS='|' read -r owner_kind owner_name owner_uid <<< "$owner_info"
+      EW_OWNER_UID="$owner_uid"
+      
+      # Get the owner resource YAML
+      if owner_yaml=$(get_external_workload_owner_yaml "$WORKLOAD" "$TYPE_SAFE" "$owner_kind" "$owner_name"); then
+        OUTPUT_FILES+=("$owner_yaml")
+      fi
+    fi
+  fi
+else
+  # For non-external workloads, use the workload name as-is
+  if workload_yaml=$(get_workload_yaml "$WORKLOAD" "$CANONICAL_TYPE" "$TYPE_SAFE"); then
+    OUTPUT_FILES+=("$workload_yaml")
+  fi
 fi
 
-# Get runaijob YAML
-if runaijob_yaml=$(get_runaijob_yaml "$WORKLOAD" "$TYPE_SAFE"); then
-  OUTPUT_FILES+=("$runaijob_yaml")
+# Get runaijob YAML (skip for external workloads as they don't have RunAIJob)
+if [[ "$IS_EXTERNAL_WORKLOAD" == "false" ]]; then
+  if runaijob_yaml=$(get_runaijob_yaml "$WORKLOAD" "$TYPE_SAFE"); then
+    OUTPUT_FILES+=("$runaijob_yaml")
+  fi
 fi
 
 # Centralized pod and container discovery (OPTIMIZATION: single k8s_cmd call)
 echo "  🔍 Discovering pods and containers..." >&2
-PODS_INFO=$(get_pods_and_containers_info "$WORKLOAD")
+
+# Determine the appropriate label selector for pod discovery
+if [[ "$IS_EXTERNAL_WORKLOAD" == "true" && -n "$EW_OWNER_UID" ]]; then
+  # For external workloads, use the owner UID to find pods
+  echo "    🔍 Using run.ai/top-owner-uid label for external workload pod discovery..." >&2
+  PODS_INFO=$(get_pods_and_containers_info "$WORKLOAD" "run.ai/top-owner-uid=$EW_OWNER_UID")
+else
+  # For regular workloads, use the workloadName label
+  PODS_INFO=$(get_pods_and_containers_info "$WORKLOAD")
+fi
+
 if [[ $? -eq 0 && -n "$PODS_INFO" ]]; then
   echo "    ✅ Pod and container information discovered" >&2
   
