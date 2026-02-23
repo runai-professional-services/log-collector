@@ -18,6 +18,10 @@ A collection of diagnostic utilities for Run:AI environments. These scripts auto
   - [Prerequisites](#prerequisites-3)
   - [Usage](#usage-2)
   - [Output](#output-2)
+- [scheduler_snapshot.sh](#scheduler_snapshotsh)
+  - [Usage](#usage-3)
+  - [What the snapshot contains](#what-the-snapshot-contains)
+  - [Output](#output-3)
 
 ## Prerequisites
 
@@ -31,6 +35,7 @@ A collection of diagnostic utilities for Run:AI environments. These scripts auto
 | `cluster.sh` | Cluster-wide logs from Run:AI namespaces + scheduler resources |
 | `workload.sh` | Individual workload diagnostics |
 | `gpu.sh` | GPU Operator logs and configuration |
+| `scheduler_snapshot.sh` | Scheduler debug snapshots from all Run:AI scheduler deployments |
 
 ---
 
@@ -218,3 +223,28 @@ Creates `gpu-operator-logs-<timestamp>.tar.gz` containing:
 - Helm values
 - ClusterPolicies and NodeFeatures
 - GPU-related events
+
+---
+
+## scheduler_snapshot.sh
+
+Collects scheduler snapshots from all Run:AI scheduler deployments in the `runai` namespace. For each deployment, calls the `/get-snapshot` endpoint and saves the response.
+
+### Usage
+
+```bash
+chmod +x ./scheduler_snapshot.sh
+./scheduler_snapshot.sh
+```
+
+Optional: set `RUNAI_NAMESPACE` to use a different namespace (default: `runai`).
+
+### What the snapshot contains
+
+- **config** – Scheduler actions and plugin tiers
+- **schedulerParams** – RunAI params (partition, fairness, schedule period, etc.)
+- **rawObjects** – Cluster state the scheduler uses: pods, nodes, queues, podGroups, bindRequests, priorityClasses, configMaps, PVCs, storageClasses, csiDrivers, etc.
+
+### Output
+
+One gzip file per scheduler deployment: `<deployment-name>-snapshot.gzip` (e.g. `runai-scheduler-default-snapshot.gzip`).
