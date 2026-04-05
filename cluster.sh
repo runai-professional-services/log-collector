@@ -156,6 +156,7 @@ collect_scheduler_info() {
   dump_scheduler_resource "queues.scheduling.run.ai" "queue" "$SCHEDULER_DIR"
   dump_scheduler_resource "nodepools.run.ai" "nodepool" "$SCHEDULER_DIR"
   dump_scheduler_resource "departments.scheduling.run.ai" "department" "$SCHEDULER_DIR"
+  dump_scheduler_resource "accessrules.run.ai" "accessrule" "$SCHEDULER_DIR"
   echo "  ✓ Scheduler resources collection completed"
 }
 
