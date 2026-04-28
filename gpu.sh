@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # GPU Operator Log Collection Script
-VERSION="1.1.0"
+VERSION="1.0.0"
 
 # Global variable to store the kubectl command (kubectl or oc)
 KUBECTL_CMD=""

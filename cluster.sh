@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Cluster Log Collection Script
+VERSION="1.0.0"
+
 # Global variable to store the kubectl command (kubectl or oc)
 KUBECTL_CMD=""
 

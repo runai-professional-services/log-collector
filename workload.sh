@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Workload Info Dump Script
-VERSION="2.5.1"
+VERSION="1.0.0"
 
 # Removed 'set -e' to allow script to continue when individual commands fail
 

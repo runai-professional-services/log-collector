@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook: ensures all scripts have the version from the VERSION file.
+# Runs automatically before every commit.
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+VERSION_FILE="$REPO_ROOT/VERSION"
+
+if [[ ! -f "$VERSION_FILE" ]]; then
+  exit 0
+fi
+
+CURRENT_VERSION="$(cat "$VERSION_FILE" | tr -d '[:space:]')"
+SCRIPTS=(cluster.sh gpu.sh workload.sh scheduler_snapshot.sh)
+UPDATED=false
+
+for script in "${SCRIPTS[@]}"; do
+  filepath="$REPO_ROOT/$script"
+  [[ -f "$filepath" ]] || continue
+
+  SCRIPT_VERSION="$(grep -oP '^VERSION="\K[^"]+' "$filepath" 2>/dev/null || true)"
+  if [[ "$SCRIPT_VERSION" != "$CURRENT_VERSION" ]]; then
+    sed -i.bak "s/^VERSION=\".*\"/VERSION=\"$CURRENT_VERSION\"/" "$filepath"
+    rm -f "${filepath}.bak"
+    git add "$filepath"
+    UPDATED=true
+  fi
+done
+
+if [[ "$UPDATED" == "true" ]]; then
+  echo "pre-commit: stamped scripts with version $CURRENT_VERSION"
+fi

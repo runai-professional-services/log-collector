@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Scheduler Snapshot Collection Script
+VERSION="1.0.0"
 # Collect scheduler snapshots from all RunAI scheduler deployments in the runai namespace.
 # For each deployment, calls the /get-snapshot endpoint and saves the response as <deployment>-snapshot.gzip.
 #

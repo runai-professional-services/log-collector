@@ -2,8 +2,15 @@
 
 A collection of diagnostic utilities for Run:AI environments. These scripts automate the collection of logs, configurations, and resource manifests from Kubernetes clusters to aid in debugging and troubleshooting.
 
+## Version
+
+Current version: **1.0.0** (see [CHANGELOG.md](CHANGELOG.md) for release history)
+
+This project uses [Semantic Versioning](https://semver.org/). Each release is tagged as `v<MAJOR>.<MINOR>.<PATCH>` (e.g. `v1.0.0`).
+
 ## Table of Contents
 
+- [Version](#version)
 - [Prerequisites](#prerequisites)
 - [Scripts](#scripts)
 - [cluster.sh](#clustersh)
