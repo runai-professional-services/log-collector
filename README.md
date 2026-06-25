@@ -255,3 +255,15 @@ Optional: set `RUNAI_NAMESPACE` to use a different namespace (default: `runai`).
 ### Output
 
 One gzip file per scheduler deployment: `<deployment-name>-snapshot.gzip` (e.g. `runai-scheduler-default-snapshot.gzip`).
+
+---
+
+## Contributing
+
+This project is currently not accepting contributions.
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
+
+Copyright 2025-2026 NVIDIA CORPORATION & AFFILIATES. See [NOTICE](NOTICE) for third-party attributions.
