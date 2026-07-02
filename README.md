@@ -1,93 +1,269 @@
-# RunAI Log Collector
+# Run:AI Log Collector
 
+A collection of diagnostic utilities for Run:AI environments. These scripts automate the collection of logs, configurations, and resource manifests from Kubernetes clusters to aid in debugging and troubleshooting.
 
+## Version
 
-## Getting started
+Current version: **1.0.0** (see [CHANGELOG.md](CHANGELOG.md) for release history)
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+This project uses [Semantic Versioning](https://semver.org/). Each release is tagged as `v<MAJOR>.<MINOR>.<PATCH>` (e.g. `v1.0.0`).
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+## Table of Contents
 
-## Add your files
+- [Version](#version)
+- [Prerequisites](#prerequisites)
+- [Scripts](#scripts)
+- [cluster.sh](#clustersh)
+  - [Prerequisites](#prerequisites-1)
+  - [Usage](#usage)
+  - [Output](#output)
+- [workload.sh](#workloadsh)
+  - [Prerequisites](#prerequisites-2)
+  - [Usage](#usage-1)
+  - [Output](#output-1)
+- [gpu.sh](#gpush)
+  - [Prerequisites](#prerequisites-3)
+  - [Usage](#usage-2)
+  - [Output](#output-2)
+- [scheduler_snapshot.sh](#scheduler_snapshotsh)
+  - [Usage](#usage-3)
+  - [What the snapshot contains](#what-the-snapshot-contains)
+  - [Output](#output-3)
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+## Prerequisites
+
+- **kubectl** (with cluster access)
+- **helm**
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `cluster.sh` | Cluster-wide logs from Run:AI namespaces + scheduler resources |
+| `workload.sh` | Individual workload diagnostics |
+| `gpu.sh` | GPU Operator logs and configuration |
+| `scheduler_snapshot.sh` | Scheduler debug snapshots from all Run:AI scheduler deployments |
+
+---
+
+## cluster.sh
+
+Collects Run:AI cluster logs via kubectl and generates a general information dump to aid in debugging and troubleshooting Run:AI environments. Also includes scheduler resources (projects, queues, nodepools, departments).
+
+### Prerequisites
+
+- [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl) (with admin access to the cluster)
+- [helm](https://helm.sh/docs/intro/install/)
+
+### Usage
+
+```bash
+chmod +x ./cluster.sh
+./cluster.sh
+```
+
+### Output
+
+Creates timestamped `tar.gz` archives per namespace (`runai` / `runai-backend`).
+
+#### `runai` namespace
+
+**Folder structure:**
 
 ```
-cd existing_repo
-git remote add origin https://gitlab-master.nvidia.com/nvex-nmc-oss/runai-log-collector.git
-git branch -M main
-git push -uf origin main
+runai-logs-07-07-2025_14-30
+├── cm_runai-public.yaml
+├── engine-config.yaml
+├── helm_charts_list.txt
+├── helm-values_runai-cluster.yaml
+├── logs
+│   ├── <POD_NAME>_<CONTAINER_NAME>.log
+│   ├── ...
+├── node-list.txt
+├── pod-list_runai.txt
+├── runaiconfig.yaml
+└── scheduler
+    ├── projects.run.ai_list.txt
+    ├── project_*.yaml
+    ├── queues.scheduling.run.ai_list.txt
+    ├── queue_*.yaml
+    ├── nodepools.run.ai_list.txt
+    ├── nodepool_*.yaml
+    ├── departments.scheduling.run.ai_list.txt
+    └── department_*.yaml
 ```
 
-## Integrate with your tools
+**File mapping:**
 
-- [ ] [Set up project integrations](https://gitlab-master.nvidia.com/nvex-nmc-oss/runai-log-collector/-/settings/integrations)
+| File | Command |
+|------|---------|
+| `logs/${POD}_${CONTAINER}.log` | `kubectl -n $NAMESPACE logs --timestamps $POD -c $CONTAINER` |
+| `cm_runai-public.yaml` | `kubectl -n runai get cm runai-public -o yaml` |
+| `engine-config.yaml` | `kubectl -n runai get configs.engine.run.ai engine-config -o yaml` |
+| `helm_charts_list.txt` | `helm ls -A` |
+| `helm-values_runai-cluster.yaml` | `helm -n runai get values runai-cluster` |
+| `node-list.txt` | `kubectl get nodes -o wide` |
+| `pod-list_runai.txt` | `kubectl -n runai get pods -o wide` |
+| `runaiconfig.yaml` | `kubectl -n runai get runaiconfig runai -o yaml` |
+| `scheduler/projects.run.ai_list.txt` | `kubectl get projects.run.ai` |
+| `scheduler/project_*.yaml` | Individual project manifests |
+| `scheduler/queues.scheduling.run.ai_list.txt` | `kubectl get queues.scheduling.run.ai` |
+| `scheduler/queue_*.yaml` | Individual queue manifests |
+| `scheduler/nodepools.run.ai_list.txt` | `kubectl get nodepools.run.ai` |
+| `scheduler/nodepool_*.yaml` | Individual nodepool manifests |
+| `scheduler/departments.scheduling.run.ai_list.txt` | `kubectl get departments.scheduling.run.ai` |
+| `scheduler/department_*.yaml` | Individual department manifests |
 
-## Collaborate with your team
+#### `runai-backend` namespace
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+**Folder structure:**
 
-## Test and Deploy
+```
+runai-backend-logs-07-07-2025_14-31
+├── helm-values_runai-backend.yaml
+├── logs
+│   ├── <POD_NAME>_<CONTAINER_NAME>.log
+│   ├── ...
+└── pod-list_runai-backend.txt
+```
 
-Use the built-in continuous integration in GitLab.
+**File mapping:**
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+| File | Command |
+|------|---------|
+| `logs/${POD}_${CONTAINER}.log` | `kubectl -n $NAMESPACE logs --timestamps $POD -c $CONTAINER` |
+| `helm-values_runai-backend.yaml` | `helm -n runai-backend get values runai-backend` |
+| `pod-list_runai-backend.txt` | `kubectl -n runai-backend get pods -o wide` |
 
-***
+---
 
-# Editing this README
+## workload.sh
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Collects and archives Run:AI workload diagnostics into a single timestamped archive.
 
-## Suggestions for a good README
+### Prerequisites
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+- `kubectl` installed and configured
+- Access to Kubernetes cluster with Run:AI workloads
 
-## Name
-Choose a self-explaining name for your project.
+### Usage
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+```bash
+chmod +x ./workload.sh
+./workload.sh --project <PROJECT> --type <TYPE> --workload <WORKLOAD>
+```
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+**Parameters:**
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+| Parameter | Description |
+|-----------|-------------|
+| `--project` | Run:AI project name |
+| `--workload` | Workload name |
+| `--type` | Workload type: `tw`, `iw`, `dw`, `infw`, `dinfw`, `ew` |
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+**Example:**
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```bash
+./workload.sh --project ml-team --type dw --workload bert-training
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+### Output
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+Creates `<PROJECT>_<TYPE>_<WORKLOAD>_v<VERSION>_<TIMESTAMP>.tar.gz` containing:
+
+#### Workload Resources
+
+- Workload YAML (TrainingWorkload, DistributedWorkload, etc.)
+- RunAIJob YAML
+- PodGroup YAML
+- KSVC YAML (inference workloads only)
+
+#### Pod Resources (per pod)
+
+- Pod YAML manifest
+- Pod describe output
+- Container logs (all containers)
+- nvidia-smi output (when available)
+
+#### Namespace Resources
+
+- All Pods (list with wide output)
+- All ConfigMaps
+- All PVCs
+- All Services
+- All Ingresses
+- All Routes (OpenShift)
+
+**Features:**
+
+- Resilient collection (continues on individual failures)
+- Optimized pod discovery (single kubectl call)
+- Clear naming: `<workload>_<type>_<resource>.yaml`
+
+---
+
+## gpu.sh
+
+Collects NVIDIA GPU Operator logs and cluster GPU information.
+
+### Prerequisites
+
+- `kubectl` with cluster access
+- `helm` (optional, for values extraction)
+- `jq` (optional, for Helm release detection)
+
+### Usage
+
+```bash
+chmod +x ./gpu.sh
+./gpu.sh
+```
+
+### Output
+
+Creates `gpu-operator-logs-<timestamp>.tar.gz` containing:
+
+- Cluster and node information
+- GPU Operator pod logs (current + previous)
+- Pod descriptions
+- ConfigMaps, DaemonSets, Secrets
+- Helm values
+- ClusterPolicies and NodeFeatures
+- GPU-related events
+
+---
+
+## scheduler_snapshot.sh
+
+Collects scheduler snapshots from all Run:AI scheduler deployments in the `runai` namespace. For each deployment, calls the `/get-snapshot` endpoint and saves the response.
+
+### Usage
+
+```bash
+chmod +x ./scheduler_snapshot.sh
+./scheduler_snapshot.sh
+```
+
+Optional: set `RUNAI_NAMESPACE` to use a different namespace (default: `runai`).
+
+### What the snapshot contains
+
+- **config** – Scheduler actions and plugin tiers
+- **schedulerParams** – RunAI params (partition, fairness, schedule period, etc.)
+- **rawObjects** – Cluster state the scheduler uses: pods, nodes, queues, podGroups, bindRequests, priorityClasses, configMaps, PVCs, storageClasses, csiDrivers, etc.
+
+### Output
+
+One gzip file per scheduler deployment: `<deployment-name>-snapshot.gzip` (e.g. `runai-scheduler-default-snapshot.gzip`).
+
+---
 
 ## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+This project is currently not accepting contributions.
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+This project is licensed under the [Apache License 2.0](LICENSE).
+
+Copyright 2025-2026 NVIDIA CORPORATION & AFFILIATES. See [NOTICE](NOTICE) for third-party attributions.
