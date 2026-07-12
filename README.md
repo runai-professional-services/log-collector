@@ -48,12 +48,15 @@ This project uses [Semantic Versioning](https://semver.org/). Each release is ta
 
 ## cluster.sh
 
-Collects Run:AI cluster logs via kubectl and generates a general information dump to aid in debugging and troubleshooting Run:AI environments. Also includes scheduler resources (projects, queues, nodepools, departments).
+Collects Run:AI cluster logs via kubectl (or `oc` on OpenShift) and generates a general information dump to aid in debugging and troubleshooting Run:AI environments. It processes the following namespaces when present: `runai`, `runai-backend`, `knative-serving`, `knative-operator`, and `runai-reservation`. It also collects scheduler resources (projects, queues, nodepools, departments, access rules).
+
+Namespaces that don't exist are skipped automatically. On OpenShift the script uses `oc` and collects Routes instead of Ingresses. If the Knative operator namespace uses the alternate spelling `knativeoperator`, it is detected and collected automatically.
 
 ### Prerequisites
 
-- [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl) (with admin access to the cluster)
+- [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl) (with admin access to the cluster) — or `oc` on OpenShift
 - [helm](https://helm.sh/docs/intro/install/)
+- `curl` and `jq` (optional) — required only for the Run:AI control-plane API data (IDP settings, clusters, tenants, K8s settings)
 
 ### Usage
 
@@ -62,78 +65,118 @@ chmod +x ./cluster.sh
 ./cluster.sh
 ```
 
+Color output is enabled automatically on interactive terminals. Set `NO_COLOR=1` to disable it.
+
 ### Output
 
-Creates timestamped `tar.gz` archives per namespace (`runai` / `runai-backend`).
+Creates a **single** combined archive containing one folder per collected namespace:
+
+```
+<control-plane>-runai-log-collector-output-<DD-MM-YYYY_HH-MM>.tar.gz
+```
+
+`<control-plane>` is derived from the control-plane URL (e.g. `itay-sloth-gpu-runailabs-cs-com`). Producing one archive means there is always exactly one file to attach, regardless of how many namespaces exist.
+
+**Top-level structure:**
+
+```
+<control-plane>-runai-log-collector-output-<timestamp>/
+├── collection-summary.txt
+├── runai/
+├── runai-backend/
+├── knative-serving/
+├── knative-operator/        # or "knativeoperator"
+└── runai-reservation/
+```
+
+- **`collection-summary.txt`** — an at-a-glance report: cluster/control-plane URLs, CLI used, a per-namespace table of pods / total container restarts / issues, and any skipped namespaces.
+
+#### Common to every namespace folder
+
+| File / dir | Description |
+|------------|-------------|
+| `logs/${POD}_describe.txt` | `kubectl describe pod $POD` |
+| `logs/${POD}_${CONTAINER}.log` | Current container logs (`kubectl logs --timestamps`) |
+| `logs/${POD}_${CONTAINER}_previous.log` | Previous (pre-restart) container logs — only present when a container had restarted |
+| `logs/${POD}_${CONTAINER}_init.log` | Init container logs (and `_init_previous.log` when applicable) |
+| `events_<namespace>.txt` | `kubectl -n <namespace> get events --sort-by=.lastTimestamp` |
+| `script.log` | Failures-only log for that namespace: any failed command with its `stderr`, plus warnings. States "no failures" when everything succeeded. |
 
 #### `runai` namespace
 
-**Folder structure:**
-
-```
-runai-logs-07-07-2025_14-30
-├── cm_runai-public.yaml
-├── engine-config.yaml
-├── helm_charts_list.txt
-├── helm-values_runai-cluster.yaml
-├── logs
-│   ├── <POD_NAME>_<CONTAINER_NAME>.log
-│   ├── ...
-├── node-list.txt
-├── pod-list_runai.txt
-├── runaiconfig.yaml
-└── scheduler
-    ├── projects.run.ai_list.txt
-    ├── project_*.yaml
-    ├── queues.scheduling.run.ai_list.txt
-    ├── queue_*.yaml
-    ├── nodepools.run.ai_list.txt
-    ├── nodepool_*.yaml
-    ├── departments.scheduling.run.ai_list.txt
-    └── department_*.yaml
-```
-
-**File mapping:**
-
 | File | Command |
 |------|---------|
-| `logs/${POD}_${CONTAINER}.log` | `kubectl -n $NAMESPACE logs --timestamps $POD -c $CONTAINER` |
-| `cm_runai-public.yaml` | `kubectl -n runai get cm runai-public -o yaml` |
-| `engine-config.yaml` | `kubectl -n runai get configs.engine.run.ai engine-config -o yaml` |
 | `helm_charts_list.txt` | `helm ls -A` |
 | `helm-values_runai-cluster.yaml` | `helm -n runai get values runai-cluster` |
-| `node-list.txt` | `kubectl get nodes -o wide` |
+| `cm_runai-public.yaml` | `kubectl -n runai get cm runai-public -o yaml` |
+| `configmaps_runai.yaml` | `kubectl -n runai get cm -o yaml` |
+| `secrets_runai.yaml` | `kubectl -n runai get secrets -o yaml` |
+| `ingress_runai.yaml` / `routes_runai.yaml` | Ingresses (kubectl) or Routes (OpenShift) |
 | `pod-list_runai.txt` | `kubectl -n runai get pods -o wide` |
+| `node-list.txt` | `kubectl get nodes -o wide` |
+| `node-list-detailed.txt` | `kubectl get nodes` with CPU/RAM/GPU/OS/kubelet/runtime columns |
 | `runaiconfig.yaml` | `kubectl -n runai get runaiconfig runai -o yaml` |
-| `scheduler/projects.run.ai_list.txt` | `kubectl get projects.run.ai` |
-| `scheduler/project_*.yaml` | Individual project manifests |
-| `scheduler/queues.scheduling.run.ai_list.txt` | `kubectl get queues.scheduling.run.ai` |
-| `scheduler/queue_*.yaml` | Individual queue manifests |
-| `scheduler/nodepools.run.ai_list.txt` | `kubectl get nodepools.run.ai` |
-| `scheduler/nodepool_*.yaml` | Individual nodepool manifests |
-| `scheduler/departments.scheduling.run.ai_list.txt` | `kubectl get departments.scheduling.run.ai` |
-| `scheduler/department_*.yaml` | Individual department manifests |
+| `engine-config.yaml` | `kubectl -n runai get configs.engine.run.ai engine-config -o yaml` |
+| `scheduler/projects.run.ai_list.txt` + `scheduler/project_*.yaml` | Projects list and individual manifests |
+| `scheduler/queues.scheduling.run.ai_list.txt` + `scheduler/queue_*.yaml` | Queues list and individual manifests |
+| `scheduler/nodepools.run.ai_list.txt` + `scheduler/nodepool_*.yaml` | Nodepools list and individual manifests |
+| `scheduler/departments.scheduling.run.ai_list.txt` + `scheduler/department_*.yaml` | Departments list and individual manifests |
+| `scheduler/accessrules.run.ai_list.txt` + `scheduler/accessrule_*.yaml` | Access rules list and individual manifests |
 
 #### `runai-backend` namespace
 
-**Folder structure:**
+| File | Command |
+|------|---------|
+| `pod-list_runai-backend.txt` | `kubectl -n runai-backend get pods -o wide` |
+| `helm-values_runai-backend.yaml` | `helm -n runai-backend get values runai-backend` |
+| `configmaps_runai-backend.yaml` | `kubectl -n runai-backend get cm -o yaml` |
+| `secrets_runai-backend.yaml` | `kubectl -n runai-backend get secrets -o yaml` |
+| `ingress_runai-backend.yaml` / `routes_runai-backend.yaml` | Ingresses (kubectl) or Routes (OpenShift) |
+| `idp-settings.json` | IDP settings from the Run:AI API (requires `curl` + `jq`) |
+| `clusters.json` | Clusters from the Run:AI API |
+| `tenants.json` | Tenants from the Run:AI API |
+| `k8s-settings.json` | K8s settings from the Run:AI API |
 
-```
-runai-backend-logs-07-07-2025_14-31
-├── helm-values_runai-backend.yaml
-├── logs
-│   ├── <POD_NAME>_<CONTAINER_NAME>.log
-│   ├── ...
-└── pod-list_runai-backend.txt
-```
+> API data is fetched from the Run:AI control plane using admin credentials read from the `runai-backend-tenants-manager` config/secret. If `curl`/`jq` are missing or the API call fails, a `*-error.txt` is written instead and the failure is noted in `script.log`.
 
-**File mapping:**
+#### `knative-serving` namespace
 
 | File | Command |
 |------|---------|
-| `logs/${POD}_${CONTAINER}.log` | `kubectl -n $NAMESPACE logs --timestamps $POD -c $CONTAINER` |
-| `helm-values_runai-backend.yaml` | `helm -n runai-backend get values runai-backend` |
-| `pod-list_runai-backend.txt` | `kubectl -n runai-backend get pods -o wide` |
+| `pod-list_knative-serving.txt` | `kubectl -n knative-serving get pods -o wide` |
+| `configmaps_knative-serving.yaml` | `kubectl -n knative-serving get cm -o yaml` |
+| `secrets_knative-serving.yaml` | `kubectl -n knative-serving get secrets -o yaml` |
+| `knativeserving.yaml` | The `KnativeServing` object (`knativeserving_all.yaml` as a fallback) |
+| `knative-services.yaml` | `kubectl -n knative-serving get services.serving.knative.dev -o yaml` |
+| `knative-revisions.yaml` | `kubectl -n knative-serving get revisions.serving.knative.dev -o yaml` |
+| `knative-routes.yaml` | `kubectl -n knative-serving get routes.serving.knative.dev -o yaml` |
+| `knative-configurations.yaml` | `kubectl -n knative-serving get configurations.serving.knative.dev -o yaml` |
+| `knative-domainmappings.yaml` | `kubectl -n knative-serving get domainmappings.serving.knative.dev -o yaml` |
+| `mutatingwebhooks_knative.yaml` | Knative mutating webhook configurations |
+| `validatingwebhooks_knative.yaml` | Knative validating webhook configurations |
+
+#### `knative-operator` namespace
+
+| File | Command |
+|------|---------|
+| `pod-list_<namespace>.txt` | `kubectl -n <namespace> get pods -o wide` |
+| `configmaps_<namespace>.yaml` | `kubectl -n <namespace> get cm -o yaml` |
+| `secrets_<namespace>.yaml` | `kubectl -n <namespace> get secrets -o yaml` |
+
+#### `runai-reservation` namespace
+
+| File | Command |
+|------|---------|
+| `pod-list_runai-reservation.txt` | `kubectl -n runai-reservation get pods -o wide` |
+| `configmaps_runai-reservation.yaml` | `kubectl -n runai-reservation get cm -o yaml` |
+| `secrets_runai-reservation.yaml` | `kubectl -n runai-reservation get secrets -o yaml` |
+| `services_runai-reservation.yaml` | `kubectl -n runai-reservation get svc -o yaml` |
+| `deployments_runai-reservation.yaml` | `kubectl -n runai-reservation get deployments -o yaml` |
+| `statefulsets_runai-reservation.yaml` | `kubectl -n runai-reservation get statefulsets -o yaml` |
+| `daemonsets_runai-reservation.yaml` | `kubectl -n runai-reservation get daemonsets -o yaml` |
+| `pvcs_runai-reservation.yaml` | `kubectl -n runai-reservation get pvc -o yaml` |
+
+> **Note:** Secrets are collected in full (base64-encoded, as stored in the cluster). Review the archive before sharing if that is a concern.
 
 ---
 
