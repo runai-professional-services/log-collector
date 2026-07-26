@@ -4,7 +4,7 @@ A collection of diagnostic utilities for Run:AI environments. These scripts auto
 
 ## Version
 
-Current version: **1.0.0** (see [CHANGELOG.md](CHANGELOG.md) for release history)
+Current version: **1.1.0** (see [CHANGELOG.md](CHANGELOG.md) for release history)
 
 This project uses [Semantic Versioning](https://semver.org/). Each release is tagged as `v<MAJOR>.<MINOR>.<PATCH>` (e.g. `v1.0.0`).
 
@@ -20,6 +20,7 @@ This project uses [Semantic Versioning](https://semver.org/). Each release is ta
 - [workload.sh](#workloadsh)
   - [Prerequisites](#prerequisites-2)
   - [Usage](#usage-1)
+  - [Detection](#detection)
   - [Output](#output-1)
 - [gpu.sh](#gpush)
   - [Prerequisites](#prerequisites-3)
@@ -184,64 +185,102 @@ Creates a **single** combined archive containing one folder per collected namesp
 
 Collects and archives Run:AI workload diagnostics into a single timestamped archive.
 
+The workload type and the CR architecture are detected from the cluster, so only the project and the workload name are needed. This matters from Run:AI 2.26 on, where the native per-type CRDs (`InteractiveWorkload`, `TrainingWorkload`, …) can be replaced by a single generic `WorkloadRunner` reconciled by the any-workload controller. The two shapes coexist on the same cluster — conversion is opt-in per workload type — and a converted Workspace and a converted Training workload have identical kinds at every level, so the type can no longer be inferred from the CR kind.
+
 ### Prerequisites
 
-- `kubectl` installed and configured
+- `kubectl` installed and configured — or `oc` on OpenShift
 - Access to Kubernetes cluster with Run:AI workloads
 
 ### Usage
 
 ```bash
 chmod +x ./workload.sh
-./workload.sh --project <PROJECT> --type <TYPE> --workload <WORKLOAD>
+./workload.sh --project <PROJECT> --workload <WORKLOAD>
 ```
 
 **Parameters:**
 
 | Parameter | Description |
 |-----------|-------------|
-| `--project` | Run:AI project name |
-| `--workload` | Workload name |
-| `--type` | Workload type: `tw`, `iw`, `dw`, `infw`, `dinfw`, `ew` |
+| `--project` | Run:AI project name (required) |
+| `--workload` | Workload name (required) |
 
 **Example:**
 
 ```bash
-./workload.sh --project ml-team --type dw --workload bert-training
+./workload.sh --project ml-team --workload bert-training
 ```
+
+### Detection
+
+The script resolves the project's namespace from `projects.run.ai` (falling back to the `runai/queue` label), then probes for the workload in this order:
+
+1. **`workloadrunners.run.ai`** — the 2.26+ architecture. Probed first because the native CRDs remain registered on 2.26 and still receive workloads whose type is not enabled for any-workload submission, so a single cluster can hold both shapes at once. The logical type is read from the embedded template's `workloadKind` label; the `WorkloadRunner`'s own labels only describe the wrapped GVK.
+2. **The native workload CRDs** — `interactiveworkloads`, `trainingworkloads`, `distributedworkloads`, `inferenceworkloads`, `distributedinferenceworkloads`. Probed one at a time, because kubectl aborts an entire multi-kind `get` when a single type is unknown to the server.
+3. **`externalworkloads.run.ai`** — a third-party resource (Deployment, StatefulSet, …) scheduled by Run:AI, matched on `spec.originalWorkloadName`.
+
+Nothing in the detection path touches pods, so stopped and suspended workloads resolve correctly.
+
+Child resources are then collected by walking owner references outward from the workload's UID. The tree is traversed by UID membership rather than down a single spine: on 2.26 the PVCs and personal-credential secrets hang off the `WorkloadRunner` while the networking resources hang off the `Job` one level below. Non-controller owner references are followed deliberately — 2.26 networking uses plain owner references, so filtering on `controller: true` would drop all of it.
 
 ### Output
 
-Creates `<PROJECT>_<TYPE>_<WORKLOAD>_v<VERSION>_<TIMESTAMP>.tar.gz` containing:
+Creates `<PROJECT>_<TYPE>_<WORKLOAD>_v<VERSION>_<TIMESTAMP>.tar.gz` containing a single folder:
 
-#### Workload Resources
+```
+<project>_<type>_<workload>_v<version>_<timestamp>/
+├── detection.txt
+├── workload/
+├── pods/
+└── namespace/
+```
 
-- Workload YAML (TrainingWorkload, DistributedWorkload, etc.)
-- RunAIJob YAML
-- PodGroup YAML
-- KSVC YAML (inference workloads only)
+#### `detection.txt`
 
-#### Pod Resources (per pod)
+The detection result and the resource tree that drove collection: architecture, workload type, top-level CR, the template GVK a `WorkloadRunner` runs, whether the workload was converted from a native type, `workloadId`, root UID, and the owner-reference tree with non-controller references marked. For example:
 
-- Pod YAML manifest
-- Pod describe output
-- Container logs (all containers)
-- nvidia-smi output (when available)
+```
+architecture    : workloadrunner (WorkloadRunner / any-workload controller (2.26+))
+workload type   : Workspace
+top-level CR    : workloadrunners.run.ai/workspace-test
+runs template   : batch/v1 Job
+converted       : true
 
-#### Namespace Resources
+resource tree (by owner reference)
+---------------------------------
+  WorkloadRunner/workspace-test
+    Job/workspace-test
+      Pod/workspace-test-ldgs5
+      Service/job-workspace-test-url   [owner ref, not controller]
+      Ingress/job-workspace-test-url   [owner ref, not controller]
+```
 
-- All Pods (list with wide output)
-- All ConfigMaps
-- All PVCs
-- All Services
-- All Ingresses
-- All Routes (OpenShift)
+#### `workload/`
+
+The top-level CR plus every resource discovered in its tree, one file per object named `<kind>_<name>.yaml`. Depending on the era and type this includes the `RunaiJob` or `batch/v1 Job`, kubeflow jobs, Knative Services/Configurations/Revisions, LeaderWorkerSets, NIMServices, Services, Ingresses, Routes, HTTPRoutes, ConfigMaps, PVCs and ComputeDomains. PodGroups are also collected by `workloadName` label, since the scheduler does not own them through the workload tree in every era.
+
+Secrets found in the tree are captured as `secret_<name>_describe.txt` — `describe` lists the keys and their sizes without exporting the values, which keeps personal-credential tokens out of the archive.
+
+#### `pods/`
+
+Per pod, discovered from the resource tree unioned with a `run.ai/workload-id` label lookup:
+
+- `<pod>.yaml` — manifest
+- `<pod>_describe.txt` — describe output
+- `<pod>_<container>.log` — logs for every container, including init containers
+- `<pod>_<container>_previous.log` — pre-restart logs, only when the container has restarted
+- `<pod>_<container>_nvidia-smi.txt` — only when the command succeeds in that container
+
+#### `namespace/`
+
+Surrounding context: `pod-list.txt`, `events.txt`, `configmaps.yaml`, `pvcs.yaml`, `services.yaml`, `ingresses.yaml`, and `routes.yaml` on OpenShift. Empty collections are skipped rather than written as an empty list.
 
 **Features:**
 
 - Resilient collection (continues on individual failures)
-- Optimized pod discovery (single kubectl call)
-- Clear naming: `<workload>_<type>_<resource>.yaml`
+- No `jq` or `python` dependency
+- Works unchanged across pre-2.26 and 2.26+ clusters, and on OpenShift via `oc`
 
 ---
 
