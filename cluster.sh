@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Cluster Log Collection Script
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 # Global variable to store the kubectl command (kubectl or oc)
 KUBECTL_CMD=""
+INCLUDE_SENSITIVE_DATA=false
 
 # Per-namespace failure log. When set, warnings/errors and the stderr of any
 # failed collection command are appended here. It is intentionally empty
@@ -172,6 +173,192 @@ k8s_cmd() {
   $KUBECTL_CMD "$@"
 }
 
+# Secret values can contain credentials. Keep them out of the shareable archive
+# unless the operator explicitly opts in.
+collect_secrets() {
+  local namespace=$1 log_dir=$2 suffix=$3
+  if [ "$INCLUDE_SENSITIVE_DATA" = true ]; then
+    run_cmd "all Secrets (including values)" "$log_dir/secrets_${suffix}.yaml" \
+      k8s_cmd -n "$namespace" get secrets -o yaml
+  else
+    run_cmd "Secret metadata (values withheld)" "$log_dir/secret-metadata_${suffix}.txt" \
+      k8s_cmd -n "$namespace" get secrets \
+      -o 'custom-columns=NAME:.metadata.name,TYPE:.type,CREATED:.metadata.creationTimestamp'
+  fi
+}
+
+# True when a Helm values key name looks like it holds a credential value.
+# References to Secret objects (existingSecret, extraEnvVarsSecret, …) and
+# names of keys inside Secrets (passwordKey, adminPasswordKey, …) are kept —
+# those are configuration, not credentials.
+helm_key_is_sensitive() {
+  local key
+  key=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]"'"'"'')
+
+  # Object / key-name references — never redact these.
+  case "$key" in
+    *secretname*|*existingsecret*|*secretreference*|*secretref*|*createsecret*|*useexistingsecret*|*pullsecret*|*secretkeys*|*envvarssecret*|*tlssecret*|*secretfile*|*secrettype*)
+      return 1
+      ;;
+    *passwordkey*|*passwdkey*|*passwordref*|*passwordsecret*|*passwordname*|*passwordpath*)
+      return 1
+      ;;
+    *tokenurl*|*tokenuri*|*tokenendpoint*|*tokenizer*|*tokenpath*|*tokenname*|*tokenkey*)
+      return 1
+      ;;
+  esac
+
+  # Credential-bearing keys.
+  case "$key" in
+    password|passwd|secret|credentials|credential)
+      return 0
+      ;;
+    *password|*passwd)
+      # e.g. adminPassword, smtpPassword, registryPassword — but not *passwordKey (excluded above)
+      return 0
+      ;;
+    clientsecret|client_secret|client-secret|*clientsecret)
+      return 0
+      ;;
+    *accesstoken|*refreshtoken|*idtoken|*bearertoken|authtoken|apitoken|token)
+      return 0
+      ;;
+    *apikey|*api-key|*api_key|*accesskey|*access-key|*access_key|*secretkey|*secret-key|*secret_key|*privatekey|*private-key|*private_key|*authkey|*auth-key|*auth_key)
+      return 0
+      ;;
+    *connectionstring|*connection-string|*connection_string)
+      return 0
+      ;;
+    sharedsecret|appsecret|*secretvalue*|*secretdata*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# Replace credential-looking scalar values (and their |/> blocks) with
+# <REDACTED>, leaving the rest of the Helm values tree intact for debugging.
+redact_helm_values_yaml() {
+  local infile=$1 outfile=$2
+  local line indent key rest lower_indent block_indent in_block=0
+
+  : > "$outfile"
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$in_block" -eq 1 ]; then
+      lower_indent=${line%%[![:space:]]*}
+      if [ -n "${line#"${line%%[![:space:]]*}"}" ] && [ ${#lower_indent} -gt "$block_indent" ]; then
+        continue
+      fi
+      in_block=0
+    fi
+
+    case "$line" in
+      \#*|---*)
+        printf '%s\n' "$line" >> "$outfile"
+        continue
+        ;;
+    esac
+
+    if [[ "$line" =~ ^([[:space:]]*)([A-Za-z0-9_.-]+)[[:space:]]*:[[:space:]]*(.*)$ ]]; then
+      indent="${BASH_REMATCH[1]}"
+      key="${BASH_REMATCH[2]}"
+      rest="${BASH_REMATCH[3]}"
+
+      if helm_key_is_sensitive "$key"; then
+        case "$rest" in
+          '|'|'|-'|'|+'|'>'|'>-'|'>+')
+            printf '%s%s: |\n%s  <REDACTED>\n' "$indent" "$key" "$indent" >> "$outfile"
+            in_block=1
+            block_indent=${#indent}
+            continue
+            ;;
+          ''|'[]'|'{}'|'null'|'~'|'true'|'false'|'True'|'False'|'Null')
+            printf '%s\n' "$line" >> "$outfile"
+            continue
+            ;;
+        esac
+        # Quoted/unquoted scalars that are not empty/bool/null/number get redacted.
+        if [[ "$rest" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+          printf '%s\n' "$line" >> "$outfile"
+          continue
+        fi
+        printf '%s%s: "<REDACTED>"\n' "$indent" "$key" >> "$outfile"
+        continue
+      fi
+    fi
+
+    printf '%s\n' "$line" >> "$outfile"
+  done < "$infile"
+
+  return 0
+}
+
+collect_helm_values() {
+  local namespace=$1 release=$2 outfile=$3
+  local raw tmp
+
+  raw=$(mktemp)
+  tmp=$(mktemp)
+  if ! helm -n "$namespace" get values "$release" > "$raw" 2>"$tmp"; then
+    err "Failed to collect Helm values for $release"
+    if [ -n "$SCRIPT_LOG" ]; then
+      {
+        echo "    command : helm -n $namespace get values $release"
+        if [ -s "$tmp" ]; then
+          sed 's/^/    stderr  : /' "$tmp"
+        else
+          echo "    stderr  : (no error output)"
+        fi
+      } >> "$SCRIPT_LOG"
+    fi
+    rm -f "$raw" "$tmp"
+    return 1
+  fi
+
+  if [ "$INCLUDE_SENSITIVE_DATA" = true ]; then
+    mv "$raw" "$outfile"
+    ok "Collected Helm values for $release (unredacted)"
+  else
+    redact_helm_values_yaml "$raw" "$outfile"
+    ok "Collected Helm values for $release (sensitive keys redacted)"
+    rm -f "$raw"
+  fi
+  rm -f "$tmp"
+  return 0
+}
+
+usage() {
+  cat <<EOF
+Run:AI Cluster Log Collector v${VERSION}
+
+Usage: $0 [--include-sensitive-data]
+
+Options:
+  --include-sensitive-data  Include full Kubernetes Secret data, and leave Helm
+                            values unredacted. These may contain credentials.
+                            Review the archive carefully before sharing.
+  --help                    Show this help and exit.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --include-sensitive-data)
+      INCLUDE_SENSITIVE_DATA=true
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
+
 # Function to collect logs for a given namespace and output directory
 collect_logs() {
   local NAMESPACE=$1
@@ -272,6 +459,13 @@ collect_scheduler_info() {
 
 banner
 
+if [ "$INCLUDE_SENSITIVE_DATA" = true ]; then
+  warn "Sensitive-data collection enabled: full Secret data and unredacted Helm values will be archived."
+  warn "Review the archive carefully before sharing it."
+else
+  info "Safe collection mode: Secret values withheld; Helm values kept with sensitive keys redacted."
+fi
+
 # Detect cluster type and set appropriate command
 detect_openshift
 
@@ -370,10 +564,10 @@ for NAMESPACE in "${NAMESPACES[@]}"; do
   group "Collecting Additional Information"
   if [ "$NAMESPACE" == "runai" ]; then
     run_cmd "Helm charts list" "$LOG_DIR/helm_charts_list.txt" helm ls -A
-    run_cmd "Helm values for runai-cluster" "$LOG_DIR/helm-values_runai-cluster.yaml" helm -n runai get values runai-cluster
+    collect_helm_values "runai" "runai-cluster" "$LOG_DIR/helm-values_runai-cluster.yaml"
     run_cmd "ConfigMap runai-public" "$LOG_DIR/cm_runai-public.yaml" k8s_cmd -n runai get cm runai-public -o yaml
     run_cmd "all ConfigMaps" "$LOG_DIR/configmaps_runai.yaml" k8s_cmd -n runai get cm -o yaml
-    run_cmd "all Secrets" "$LOG_DIR/secrets_runai.yaml" k8s_cmd -n runai get secrets -o yaml
+    collect_secrets "runai" "$LOG_DIR" "runai"
 
     if [ "$KUBECTL_CMD" == "oc" ]; then
       run_cmd "all Routes (OpenShift)" "$LOG_DIR/routes_runai.yaml" k8s_cmd -n runai get routes -o yaml
@@ -392,9 +586,9 @@ for NAMESPACE in "${NAMESPACES[@]}"; do
 
   elif [ "$NAMESPACE" == "runai-backend" ]; then
     run_cmd "pod list for runai-backend namespace" "$LOG_DIR/pod-list_runai-backend.txt" k8s_cmd -n runai-backend get pods -o wide
-    run_cmd "Helm values for runai-backend" "$LOG_DIR/helm-values_runai-backend.yaml" helm -n runai-backend get values runai-backend
+    collect_helm_values "runai-backend" "runai-backend" "$LOG_DIR/helm-values_runai-backend.yaml"
     run_cmd "all ConfigMaps" "$LOG_DIR/configmaps_runai-backend.yaml" k8s_cmd -n runai-backend get cm -o yaml
-    run_cmd "all Secrets" "$LOG_DIR/secrets_runai-backend.yaml" k8s_cmd -n runai-backend get secrets -o yaml
+    collect_secrets "runai-backend" "$LOG_DIR" "runai-backend"
 
     if [ "$KUBECTL_CMD" == "oc" ]; then
       run_cmd "all Routes (OpenShift)" "$LOG_DIR/routes_runai-backend.yaml" k8s_cmd -n runai-backend get routes -o yaml
@@ -549,7 +743,7 @@ for NAMESPACE in "${NAMESPACES[@]}"; do
   elif [ "$NAMESPACE" == "knative-serving" ]; then
     run_cmd "pod list for knative-serving namespace" "$LOG_DIR/pod-list_knative-serving.txt" k8s_cmd -n knative-serving get pods -o wide
     run_cmd "all ConfigMaps" "$LOG_DIR/configmaps_knative-serving.yaml" k8s_cmd -n knative-serving get cm -o yaml
-    run_cmd "all Secrets" "$LOG_DIR/secrets_knative-serving.yaml" k8s_cmd -n knative-serving get secrets -o yaml
+    collect_secrets "knative-serving" "$LOG_DIR" "knative-serving"
 
     task "Collecting KnativeServing object..."
     k8s_cmd -n knative-serving get knativeserving knative-serving -o yaml > "$LOG_DIR/knativeserving.yaml" 2>/dev/null
@@ -595,12 +789,12 @@ for NAMESPACE in "${NAMESPACES[@]}"; do
   elif [ "$NAMESPACE" == "knative-operator" ] || [ "$NAMESPACE" == "knativeoperator" ]; then
     run_cmd "pod list for $NAMESPACE namespace" "$LOG_DIR/pod-list_${NAMESPACE}.txt" k8s_cmd -n "$NAMESPACE" get pods -o wide
     run_cmd "all ConfigMaps" "$LOG_DIR/configmaps_${NAMESPACE}.yaml" k8s_cmd -n "$NAMESPACE" get cm -o yaml
-    run_cmd "all Secrets" "$LOG_DIR/secrets_${NAMESPACE}.yaml" k8s_cmd -n "$NAMESPACE" get secrets -o yaml
+    collect_secrets "$NAMESPACE" "$LOG_DIR" "$NAMESPACE"
 
   elif [ "$NAMESPACE" == "runai-reservation" ]; then
     run_cmd "pod list for runai-reservation namespace" "$LOG_DIR/pod-list_runai-reservation.txt" k8s_cmd -n runai-reservation get pods -o wide
     run_cmd "all ConfigMaps" "$LOG_DIR/configmaps_runai-reservation.yaml" k8s_cmd -n runai-reservation get cm -o yaml
-    run_cmd "all Secrets" "$LOG_DIR/secrets_runai-reservation.yaml" k8s_cmd -n runai-reservation get secrets -o yaml
+    collect_secrets "runai-reservation" "$LOG_DIR" "runai-reservation"
     run_cmd "all Services" "$LOG_DIR/services_runai-reservation.yaml" k8s_cmd -n runai-reservation get svc -o yaml
     run_cmd "all Deployments" "$LOG_DIR/deployments_runai-reservation.yaml" k8s_cmd -n runai-reservation get deployments -o yaml
     run_cmd "all StatefulSets" "$LOG_DIR/statefulsets_runai-reservation.yaml" k8s_cmd -n runai-reservation get statefulsets -o yaml

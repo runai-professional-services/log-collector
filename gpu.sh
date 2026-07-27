@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # GPU Operator Log Collection Script
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 # Global variable to store the kubectl command (kubectl or oc)
 KUBECTL_CMD=""

@@ -5,6 +5,19 @@ All notable changes to the Run:AI Log Collector will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-07-26
+
+### Security
+
+- **cluster.sh** – Kubernetes Secret values are excluded from archives by
+  default (metadata remains). Helm values are always collected; credential-looking
+  keys (`password`, `token`, `clientSecret`, …) are replaced with `"<REDACTED>"`.
+  Secret *references* and key-name fields (`existingSecret`, `extraEnvVarsSecret`,
+  `passwordKey`, `adminPasswordKey`, …) are left intact. `--include-sensitive-data`
+  opts into full Secret data and unredacted Helm values.
+- **workload.sh** – Project and workload arguments are validated before they are
+  used to construct local output paths.
+
 ## [1.1.0] - 2026-07-26
 
 ### Changed

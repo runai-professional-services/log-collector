@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Workload Info Dump Script
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 # Removed 'set -e' to allow script to continue when individual commands fail
 
@@ -116,6 +116,21 @@ done
 if [[ -z "$PROJECT" || -z "$WORKLOAD" ]]; then
   usage
 fi
+
+# Both values are used in local output paths as well as Kubernetes lookups.
+# Kubernetes object names do not require path separators or shell metacharacters,
+# so reject them rather than allowing archive paths to escape the working dir.
+validate_name() {
+  local label="$1" value="$2"
+  if [[ ! "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+    echo "❌ Error: Invalid ${label}: '$value'"
+    echo "Use only letters, numbers, dots, underscores, and hyphens; start with a letter or number."
+    exit 1
+  fi
+}
+
+validate_name "project name" "$PROJECT"
+validate_name "workload name" "$WORKLOAD"
 
 # Detect cluster type and set appropriate CLI command (kubectl or oc)
 detect_k8s_cli

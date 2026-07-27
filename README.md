@@ -4,7 +4,7 @@ A collection of diagnostic utilities for Run:AI environments. These scripts auto
 
 ## Version
 
-Current version: **1.1.0** (see [CHANGELOG.md](CHANGELOG.md) for release history)
+Current version: **1.1.1** (see [CHANGELOG.md](CHANGELOG.md) for release history)
 
 This project uses [Semantic Versioning](https://semver.org/). Each release is tagged as `v<MAJOR>.<MINOR>.<PATCH>` (e.g. `v1.0.0`).
 
@@ -68,6 +68,21 @@ chmod +x ./cluster.sh
 
 Color output is enabled automatically on interactive terminals. Set `NO_COLOR=1` to disable it.
 
+By default, Kubernetes Secret *values* are withheld (metadata only) and Helm
+values are collected with credential values redacted to `"<REDACTED>"`
+(`password`, `clientSecret`, `apiToken`, and similar). Configuration used for
+upgrades and debugging — images, resources, feature flags, URLs, Secret
+*references* (`existingSecret`, `extraEnvVarsSecret`, `imagePullSecrets`), and
+Secret key *names* (`passwordKey`, `adminPasswordKey`) — is kept.
+
+To include full Secret data and leave Helm values unredacted:
+
+```bash
+./cluster.sh --include-sensitive-data
+```
+
+Review an archive created with this option carefully before sharing it.
+
 ### Output
 
 Creates a **single** combined archive containing one folder per collected namespace:
@@ -108,10 +123,11 @@ Creates a **single** combined archive containing one folder per collected namesp
 | File | Command |
 |------|---------|
 | `helm_charts_list.txt` | `helm ls -A` |
-| `helm-values_runai-cluster.yaml` | `helm -n runai get values runai-cluster` |
+| `helm-values_runai-cluster.yaml` | `helm -n runai get values runai-cluster` (credential keys redacted by default) |
 | `cm_runai-public.yaml` | `kubectl -n runai get cm runai-public -o yaml` |
 | `configmaps_runai.yaml` | `kubectl -n runai get cm -o yaml` |
-| `secrets_runai.yaml` | `kubectl -n runai get secrets -o yaml` |
+| `secret-metadata_runai.txt` | Secret names, types, and creation times; values withheld |
+| `secrets_runai.yaml` | Full Secret manifests; present only with `--include-sensitive-data` |
 | `ingress_runai.yaml` / `routes_runai.yaml` | Ingresses (kubectl) or Routes (OpenShift) |
 | `pod-list_runai.txt` | `kubectl -n runai get pods -o wide` |
 | `node-list.txt` | `kubectl get nodes -o wide` |
@@ -129,9 +145,10 @@ Creates a **single** combined archive containing one folder per collected namesp
 | File | Command |
 |------|---------|
 | `pod-list_runai-backend.txt` | `kubectl -n runai-backend get pods -o wide` |
-| `helm-values_runai-backend.yaml` | `helm -n runai-backend get values runai-backend` |
+| `helm-values_runai-backend.yaml` | `helm -n runai-backend get values runai-backend` (credential keys redacted by default) |
 | `configmaps_runai-backend.yaml` | `kubectl -n runai-backend get cm -o yaml` |
-| `secrets_runai-backend.yaml` | `kubectl -n runai-backend get secrets -o yaml` |
+| `secret-metadata_runai-backend.txt` | Secret names, types, and creation times; values withheld |
+| `secrets_runai-backend.yaml` | Full Secret manifests; present only with `--include-sensitive-data` |
 | `ingress_runai-backend.yaml` / `routes_runai-backend.yaml` | Ingresses (kubectl) or Routes (OpenShift) |
 | `idp-settings.json` | IDP settings from the Run:AI API (requires `curl` + `jq`) |
 | `clusters.json` | Clusters from the Run:AI API |
@@ -146,7 +163,8 @@ Creates a **single** combined archive containing one folder per collected namesp
 |------|---------|
 | `pod-list_knative-serving.txt` | `kubectl -n knative-serving get pods -o wide` |
 | `configmaps_knative-serving.yaml` | `kubectl -n knative-serving get cm -o yaml` |
-| `secrets_knative-serving.yaml` | `kubectl -n knative-serving get secrets -o yaml` |
+| `secret-metadata_knative-serving.txt` | Secret names, types, and creation times; values withheld |
+| `secrets_knative-serving.yaml` | Full Secret manifests; present only with `--include-sensitive-data` |
 | `knativeserving.yaml` | The `KnativeServing` object (`knativeserving_all.yaml` as a fallback) |
 | `knative-services.yaml` | `kubectl -n knative-serving get services.serving.knative.dev -o yaml` |
 | `knative-revisions.yaml` | `kubectl -n knative-serving get revisions.serving.knative.dev -o yaml` |
@@ -162,7 +180,8 @@ Creates a **single** combined archive containing one folder per collected namesp
 |------|---------|
 | `pod-list_<namespace>.txt` | `kubectl -n <namespace> get pods -o wide` |
 | `configmaps_<namespace>.yaml` | `kubectl -n <namespace> get cm -o yaml` |
-| `secrets_<namespace>.yaml` | `kubectl -n <namespace> get secrets -o yaml` |
+| `secret-metadata_<namespace>.txt` | Secret names, types, and creation times; values withheld |
+| `secrets_<namespace>.yaml` | Full Secret manifests; present only with `--include-sensitive-data` |
 
 #### `runai-reservation` namespace
 
@@ -170,14 +189,18 @@ Creates a **single** combined archive containing one folder per collected namesp
 |------|---------|
 | `pod-list_runai-reservation.txt` | `kubectl -n runai-reservation get pods -o wide` |
 | `configmaps_runai-reservation.yaml` | `kubectl -n runai-reservation get cm -o yaml` |
-| `secrets_runai-reservation.yaml` | `kubectl -n runai-reservation get secrets -o yaml` |
+| `secret-metadata_runai-reservation.txt` | Secret names, types, and creation times; values withheld |
+| `secrets_runai-reservation.yaml` | Full Secret manifests; present only with `--include-sensitive-data` |
 | `services_runai-reservation.yaml` | `kubectl -n runai-reservation get svc -o yaml` |
 | `deployments_runai-reservation.yaml` | `kubectl -n runai-reservation get deployments -o yaml` |
 | `statefulsets_runai-reservation.yaml` | `kubectl -n runai-reservation get statefulsets -o yaml` |
 | `daemonsets_runai-reservation.yaml` | `kubectl -n runai-reservation get daemonsets -o yaml` |
 | `pvcs_runai-reservation.yaml` | `kubectl -n runai-reservation get pvc -o yaml` |
 
-> **Note:** Secrets are collected in full (base64-encoded, as stored in the cluster). Review the archive before sharing if that is a concern.
+> **Security note:** Full Kubernetes Secret data is excluded by default (metadata
+> only). Helm values are always collected; credential values (`password`,
+> `clientSecret`, …) are replaced with `"<REDACTED>"`, while Secret references and
+> key-name fields are kept. Use `--include-sensitive-data` for unredacted output.
 
 ---
 
