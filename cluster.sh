@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Cluster Log Collection Script
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 # Global variable to store the kubectl command (kubectl or oc)
 KUBECTL_CMD=""
@@ -132,38 +132,53 @@ check_command() {
 # Function to detect if this is an OpenShift cluster
 detect_openshift() {
   task "Detecting cluster type..."
-  
-  # First check if oc command is available
+
+  local is_openshift=false
+
+  # Whether the cluster is OpenShift is answered by the API groups the server
+  # serves, not by which binary is installed locally. Note that api-resources
+  # exits 0 and prints a header for a group that does not exist, so the output
+  # is the signal, not the exit code.
   if command -v "oc" &> /dev/null; then
-    # Try to detect OpenShift-specific resources
-    if oc api-resources --api-group=config.openshift.io &> /dev/null; then
-      ok "OpenShift cluster detected"
-      KUBECTL_CMD="oc"
-      return 0
-    fi
-    
-    # Alternative check: look for OpenShift-specific API groups
-    if oc api-versions | grep -q "config.openshift.io\|operator.openshift.io\|route.openshift.io" 2>/dev/null; then
-      ok "OpenShift cluster detected"
-      KUBECTL_CMD="oc"
-      return 0
+    # Check if any OpenShift-specific resources actually exist
+    local oc_resources=$(oc api-resources --api-group=config.openshift.io 2>/dev/null | tail -n +2)
+    if [[ -n "$oc_resources" ]]; then
+      is_openshift=true
+    elif oc api-versions 2>/dev/null | grep -q "config.openshift.io\|operator.openshift.io\|route.openshift.io"; then
+      is_openshift=true
     fi
   fi
-  
-  # If oc is not available or OpenShift not detected, check if kubectl works
-  if command -v "kubectl" &> /dev/null; then
-    # Double-check by trying to detect OpenShift APIs with kubectl
-    if kubectl api-versions | grep -q "config.openshift.io\|operator.openshift.io\|route.openshift.io" 2>/dev/null; then
+
+  # Also check with kubectl if oc didn't find OpenShift
+  if [[ "$is_openshift" == "false" ]] && command -v "kubectl" &> /dev/null; then
+    if kubectl api-versions 2>/dev/null | grep -q "config.openshift.io\|operator.openshift.io\|route.openshift.io"; then
+      is_openshift=true
+    fi
+  fi
+
+  # Now decide which CLI to use based on cluster type and available commands
+  if [[ "$is_openshift" == "true" ]]; then
+    if command -v "oc" &> /dev/null; then
+      ok "OpenShift cluster detected"
+      KUBECTL_CMD="oc"
+      return 0
+    elif command -v "kubectl" &> /dev/null; then
       ok "OpenShift cluster detected (using kubectl)"
       KUBECTL_CMD="kubectl"
       return 0
     fi
-    
-    ok "Standard Kubernetes cluster detected"
-    KUBECTL_CMD="kubectl"
-    return 0
+  else
+    if command -v "kubectl" &> /dev/null; then
+      ok "Standard Kubernetes cluster detected"
+      KUBECTL_CMD="kubectl"
+      return 0
+    elif command -v "oc" &> /dev/null; then
+      ok "Standard Kubernetes cluster detected (using oc)"
+      KUBECTL_CMD="oc"
+      return 0
+    fi
   fi
-  
+
   err "Neither 'kubectl' nor 'oc' command found. Please install one of them and try again."
   exit 1
 }

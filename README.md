@@ -4,7 +4,7 @@ A collection of diagnostic utilities for Run:AI environments. These scripts auto
 
 ## Version
 
-Current version: **1.1.1** (see [CHANGELOG.md](CHANGELOG.md) for release history)
+Current version: **1.2.0** (see [CHANGELOG.md](CHANGELOG.md) for release history)
 
 This project uses [Semantic Versioning](https://semver.org/). Each release is tagged as `v<MAJOR>.<MINOR>.<PATCH>` (e.g. `v1.0.0`).
 
@@ -25,6 +25,7 @@ This project uses [Semantic Versioning](https://semver.org/). Each release is ta
 - [gpu.sh](#gpush)
   - [Prerequisites](#prerequisites-3)
   - [Usage](#usage-2)
+  - [Namespace detection](#namespace-detection)
   - [Output](#output-2)
 - [scheduler_snapshot.sh](#scheduler_snapshotsh)
   - [Usage](#usage-3)
@@ -321,8 +322,25 @@ Collects NVIDIA GPU Operator logs and cluster GPU information.
 
 ```bash
 chmod +x ./gpu.sh
-./gpu.sh
+./gpu.sh                          # namespace detected from the cluster
+./gpu.sh -n nvidia-gpu-operator   # or name it explicitly
 ```
+
+| Option | Description |
+|--------|-------------|
+| `-n`, `--namespace <name>` | Namespace the GPU Operator is installed in. Detected from the cluster when omitted. Also settable via `GPU_OPERATOR_NAMESPACE`. |
+| `-h`, `--help` | Show help and exit. |
+
+### Namespace detection
+
+The install namespace is not fixed — the Helm chart defaults to `gpu-operator`, the OpenShift/OLM bundle uses `nvidia-gpu-operator`, and either can be overridden at install time. The namespace is resolved before collection starts, in this order:
+
+1. `-n/--namespace` or `GPU_OPERATOR_NAMESPACE`, if given. The namespace must exist or the script exits.
+2. Pods and Deployments labelled `app.kubernetes.io/component=gpu-operator`, then `app=gpu-operator`, across all namespaces. Deployments are matched alongside pods so an operator scaled to zero or failing to schedule is still found.
+3. A Deployment named `gpu-operator` in any namespace.
+4. The namespace names the installers use — `gpu-operator`, `nvidia-gpu-operator`, `gpu-operator-resources` — probed one by one. This is the path taken when the credentials cannot list across all namespaces.
+
+If the operator is found in more than one namespace, the first is used and a warning names the others so the run can be repeated with `-n`. The resolved namespace is recorded in `collection-summary.txt`.
 
 ### Output
 
@@ -333,8 +351,10 @@ Creates `gpu-operator-logs-<timestamp>.tar.gz` containing:
 - Pod descriptions
 - ConfigMaps, DaemonSets, Secrets
 - Helm values
-- ClusterPolicies and NodeFeatures
+- ClusterPolicies, NVIDIADrivers and NodeFeatures
 - GPU-related events
+
+Custom resources are requested by fully qualified name (`clusterpolicies.nvidia.com`), because `kubectl` resolves a bare plural to whichever API group sorts first — on a cluster running Kyverno, `clusterpolicies` returns Kyverno's objects instead of NVIDIA's. A CRD that is not installed is recorded as such, so an empty file is never mistaken for the operator having reported nothing.
 
 ---
 

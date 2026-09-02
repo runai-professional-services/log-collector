@@ -5,6 +5,49 @@ All notable changes to the Run:AI Log Collector will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-02
+
+### Changed
+
+- **gpu.sh** – The GPU Operator namespace is detected from the cluster instead of
+  being hardcoded to `gpu-operator`, which collected nothing on installs that use
+  another name (the OpenShift/OLM bundle uses `nvidia-gpu-operator`). Detection
+  matches the operator's own labels on pods and Deployments, then a Deployment
+  named `gpu-operator`, then the namespace names the installers use — the last
+  step covering credentials that cannot list across all namespaces. `-n/--namespace`
+  and `GPU_OPERATOR_NAMESPACE` override detection, and the resolved namespace is
+  recorded in `collection-summary.txt`.
+- **gpu.sh** – Helm values are read from the release whose chart is the GPU
+  Operator rather than the first release in the namespace, so a namespace hosting
+  more than one release no longer yields the wrong values.
+
+### Added
+
+- **gpu.sh** – `nvidiadrivers.yaml`, the NVIDIADriver CRs used by installs that
+  manage the driver through its own resource rather than the ClusterPolicy.
+
+### Fixed
+
+- **gpu.sh** – `clusterpolicies.yaml` could contain Kyverno's ClusterPolicy
+  objects instead of NVIDIA's. `kubectl` resolves a bare plural to whichever API
+  group sorts first, and `kyverno.io` precedes `nvidia.com`, so a cluster running
+  both silently returned the wrong resource. ClusterPolicy is now requested as
+  `clusterpolicies.nvidia.com`. A CRD that is not installed is recorded as such,
+  so an empty collection can no longer be mistaken for the operator reporting
+  nothing.
+- **gpu.sh** – `nodefeatures.yaml` was always empty. NodeFeature is namespaced
+  and no namespace was passed, so the collection ran against whichever namespace
+  the kubeconfig pointed at and returned an empty list with a success exit code.
+  Every namespace is now searched, and the API group is resolved from discovery
+  because it has changed between NFD releases.
+- **gpu.sh**, **cluster.sh** – Every cluster with `oc` installed locally was
+  reported as OpenShift. `oc api-resources --api-group=<group>` exits 0 and prints
+  only a header for a group the server does not serve, so testing its exit code
+  detected the local binary rather than the cluster. Both scripts now test the
+  command's output, matching the check `workload.sh` already used; cluster-type
+  detection and CLI selection are also separated, so an OpenShift cluster reached
+  with only `kubectl` installed is still identified as OpenShift.
+
 ## [1.1.1] - 2026-07-26
 
 ### Security

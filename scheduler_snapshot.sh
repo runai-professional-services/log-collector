@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Scheduler Snapshot Collection Script
-VERSION="1.1.1"
+VERSION="1.2.0"
 # Collect scheduler snapshots from all RunAI scheduler deployments in the runai namespace.
 # For each deployment, calls the /get-snapshot endpoint and saves the response as <deployment>-snapshot.gzip.
 #
