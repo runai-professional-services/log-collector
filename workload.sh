@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Workload Info Dump Script
-VERSION="1.2.0"
+VERSION="1.2.1"
 
 # Removed 'set -e' to allow script to continue when individual commands fail
 

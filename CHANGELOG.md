@@ -5,6 +5,30 @@ All notable changes to the Run:AI Log Collector will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-09-06
+
+### Fixed
+
+- **cluster.sh** – Collection wrote each namespace into a folder named after the
+  namespace in the current working directory, so a file or directory that
+  already carried one of those names took its place. Reported from the field
+  with a `runai` CLI binary sitting in the directory the script was run from:
+  `mkdir -p ./runai` failed against the existing file, every write into
+  `./runai/...` failed after it, and `tar` archived the binary in place of the
+  logs — the summary still reported the namespace as collected (56 pods) and the
+  run still exited as a success. The cleanup step then deleted the binary. Each
+  run now collects into its own directory, named after the archive and created
+  by the script, and only that directory is archived and removed. A run that
+  cannot create it stops instead of producing an archive of nothing.
+- **cluster.sh** – A failed `tar` was not detected, and cleanup deleted the
+  collected logs regardless. The logs are now kept and the run exits non-zero.
+
+### Changed
+
+- **cluster.sh** – The archive unpacks into a single top-level folder rather
+  than scattering namespace folders into the current directory. This is the
+  layout the README already described.
+
 ## [1.2.0] - 2026-09-02
 
 ### Changed

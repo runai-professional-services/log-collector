@@ -94,6 +94,8 @@ Creates a **single** combined archive containing one folder per collected namesp
 
 `<control-plane>` is derived from the control-plane URL (e.g. `itay-sloth-gpu-runailabs-cs-com`). Producing one archive means there is always exactly one file to attach, regardless of how many namespaces exist.
 
+Collection happens inside a directory of the same name, created next to the archive and removed once the archive is written. Nothing else in the working directory is read, written, or deleted.
+
 **Top-level structure:**
 
 ```

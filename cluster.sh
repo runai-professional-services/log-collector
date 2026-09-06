@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Cluster Log Collection Script
-VERSION="1.2.0"
+VERSION="1.2.1"
 
 # Global variable to store the kubectl command (kubectl or oc)
 KUBECTL_CMD=""
@@ -525,10 +525,37 @@ info "Control Plane URL:           $CP_URL"
 info "Control Plane Name (cleaned): $CP_NAME_CLEAN"
 
 TIMESTAMP=$(date +%d-%m-%Y_%H-%M)
-LOG_ARCHIVE_NAME="$CP_NAME_CLEAN-runai-log-collector-output-$TIMESTAMP.tar.gz"
+
+# Everything is collected into one directory that this run creates, and only
+# that directory is archived and removed at the end. Namespace folders must not
+# be written straight into the working directory: a path already named after a
+# namespace (a 'runai' CLI binary, say) takes the place of the collection, and
+# the cleanup at the end would delete it.
+RUN_NAME="$CP_NAME_CLEAN-runai-log-collector-output-$TIMESTAMP"
+RUN_SUFFIX=1
+while [ -e "./$RUN_NAME" ] || [ -e "./$RUN_NAME.tar.gz" ]; do
+  # The timestamp is minute-granular, so a second run within the same minute
+  # needs a name of its own.
+  RUN_NAME="$CP_NAME_CLEAN-runai-log-collector-output-${TIMESTAMP}_$RUN_SUFFIX"
+  RUN_SUFFIX=$((RUN_SUFFIX + 1))
+done
+RUN_DIR="./$RUN_NAME"
+LOG_ARCHIVE_NAME="$RUN_NAME.tar.gz"
+
+# Plain mkdir: the loop above established the path is free, so a failure here is
+# a real one (no write permission, read-only filesystem) and has to stop the run
+# rather than let it produce an archive of nothing.
+if ! mkdir "$RUN_DIR" 2>/dev/null; then
+  err "Could not create the collection directory '$RUN_DIR'"
+  detail "Check that you have write permission in $(pwd)"
+  exit 1
+fi
+
 COLLECTED_LOG_DIRS=()
 SUMMARY_ROWS=()
 SKIPPED_NS=()
+
+info "Collection directory:        $RUN_DIR"
 
 for NAMESPACE in "${NAMESPACES[@]}"; do
   ns_header "$NAMESPACE"
@@ -544,7 +571,7 @@ for NAMESPACE in "${NAMESPACES[@]}"; do
 
   ok "Namespace '$NAMESPACE' exists. Starting log collection..."
   
-  LOG_DIR="./$NAMESPACE"
+  LOG_DIR="$RUN_DIR/$NAMESPACE"
   mkdir -p "$LOG_DIR"
   SCRIPT_LOG="$LOG_DIR/script.log"
   SCRIPT_LOG_FAILURES=0
@@ -845,11 +872,12 @@ done
 if [ ${#COLLECTED_LOG_DIRS[@]} -eq 0 ]; then
   section "No Data Collected"
   warn "No namespaces were found. No archive was created."
+  rmdir "$RUN_DIR" 2>/dev/null
   exit 0
 fi
 
 section "Collection Summary"
-SUMMARY_FILE="./collection-summary.txt"
+SUMMARY_FILE="$RUN_DIR/collection-summary.txt"
 {
   echo "Run:AI Cluster Log Collector — Collection Summary"
   echo "=================================================="
@@ -885,21 +913,27 @@ section "Creating Combined Archive"
 info "Archive name: $LOG_ARCHIVE_NAME"
 info "Including ${#COLLECTED_LOG_DIRS[@]} namespace folder(s) + collection-summary.txt:"
 for dir in "${COLLECTED_LOG_DIRS[@]}"; do
-  detail "- $dir"
+  detail "- $(basename "$dir")"
 done
 
 task "Calculating total size..."
-du -chs "$SUMMARY_FILE" "${COLLECTED_LOG_DIRS[@]}"
+du -chs "$RUN_DIR"
 
 task "Creating tar archive..."
-tar czf "$LOG_ARCHIVE_NAME" "$SUMMARY_FILE" "${COLLECTED_LOG_DIRS[@]}"
+if ! tar czf "$LOG_ARCHIVE_NAME" "$RUN_NAME"; then
+  err "Failed to create the archive"
+  detail "The collected logs are preserved in $RUN_DIR"
+  exit 1
+fi
 ok "Archive created"
 
 task "Archive details:"
 ls -lah "$LOG_ARCHIVE_NAME"
 
+# Safe to remove outright: this run created the directory, and everything in it
+# is in the archive.
 task "Cleaning up temporary files..."
-rm -rf "${COLLECTED_LOG_DIRS[@]}" "$SUMMARY_FILE"
+rm -rf "$RUN_DIR"
 ok "Temporary files removed"
 
 section "Done"
