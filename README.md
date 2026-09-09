@@ -158,7 +158,12 @@ Collection happens inside a directory of the same name, created next to the arch
 | `tenants.json` | Tenants from the Run:AI API |
 | `k8s-settings.json` | K8s settings from the Run:AI API |
 
-> API data is fetched from the Run:AI control plane using admin credentials read from the `runai-backend-tenants-manager` config/secret. If `curl`/`jq` are missing or the API call fails, a `*-error.txt` is written instead and the failure is noted in `script.log`.
+> API data is fetched from the Run:AI control plane using the admin username and
+> `AUTH_SERVICE_URL` from the `runai-backend-tenants-manager` ConfigMap, plus the admin
+> password from the `runai-backend-credentials` Secret (falling back to
+> `runai-backend-tenants-manager` on older backends). If `curl`/`jq` are missing or the
+> API call fails, a `*-error.txt` is written instead and the failure is noted in
+> `script.log`, which names the specific lookup that came up empty.
 
 #### `knative-serving` namespace
 

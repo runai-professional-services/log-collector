@@ -188,6 +188,25 @@ k8s_cmd() {
   $KUBECTL_CMD "$@"
 }
 
+# Control-plane admin password location varies by Run:AI backend version:
+# newer releases store it in runai-backend-credentials, older ones in
+# runai-backend-tenants-manager. Listed newest-first.
+ADMIN_PASSWORD_SOURCES="runai-backend-credentials:ADMIN_PASSWORD runai-backend-credentials:admin-password runai-backend-tenants-manager:ADMIN_PASSWORD"
+
+read_admin_password() {
+  local source secret key value
+  for source in $ADMIN_PASSWORD_SOURCES; do
+    secret=${source%%:*}
+    key=${source##*:}
+    value=$(k8s_cmd get secret "$secret" -n runai-backend -o "jsonpath={.data['$key']}" 2>/dev/null | base64 -d 2>/dev/null)
+    if [ -n "$value" ]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Secret values can contain credentials. Keep them out of the shareable archive
 # unless the operator explicitly opts in.
 collect_secrets() {
@@ -643,8 +662,14 @@ for NAMESPACE in "${NAMESPACES[@]}"; do
     if command -v curl &> /dev/null && command -v jq &> /dev/null; then
       # Get admin credentials and control plane URL
       RUNAI_USERNAME=$(k8s_cmd get cm runai-backend-tenants-manager -n runai-backend -o jsonpath='{.data.ADMIN_USERNAME}' 2>/dev/null)
-      RUNAI_PASSWORD=$(k8s_cmd get secret runai-backend-tenants-manager -n runai-backend -o jsonpath='{.data.ADMIN_PASSWORD}' 2>/dev/null | base64 -d)
+      RUNAI_PASSWORD=$(read_admin_password)
       RUNAI_CTRL_PLANE=$(k8s_cmd get cm runai-backend-tenants-manager -n runai-backend -o jsonpath='{.data.AUTH_SERVICE_URL}' 2>/dev/null)
+
+      # Report each missing field so a failure here is distinguishable from an
+      # environment that simply has no control-plane credentials.
+      [ -z "$RUNAI_USERNAME" ] && warn "ADMIN_USERNAME not found in cm/runai-backend-tenants-manager"
+      [ -z "$RUNAI_CTRL_PLANE" ] && warn "AUTH_SERVICE_URL not found in cm/runai-backend-tenants-manager"
+      [ -z "$RUNAI_PASSWORD" ] && warn "ADMIN_PASSWORD not found in any known Secret ($ADMIN_PASSWORD_SOURCES)"
 
       if [ -n "$RUNAI_USERNAME" ] && [ -n "$RUNAI_PASSWORD" ] && [ -n "$RUNAI_CTRL_PLANE" ]; then
         info "Retrieved RunAI credentials and control plane URL"

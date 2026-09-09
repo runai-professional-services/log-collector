@@ -5,6 +5,28 @@ All notable changes to the Run:AI Log Collector will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **cluster.sh** – Control-plane API collection was skipped on current Run:AI
+  self-hosted backends, so `idp-settings.json`, `clusters.json`, `tenants.json`,
+  and `k8s-settings.json` were never written. The admin password was read from
+  the `runai-backend-tenants-manager` Secret, which on these versions holds only
+  `DB_USER`; the empty password failed the credential guard and the run reported
+  `Could not retrieve RunAI credentials or control plane URL` and moved on. The
+  archive was otherwise complete and the run exited as a success, so an
+  SSO-integrated environment looked like one with no IDP configured. The
+  password is now resolved from `runai-backend-credentials` (keys
+  `ADMIN_PASSWORD` then `admin-password`), falling back to
+  `runai-backend-tenants-manager` for older backends.
+
+### Changed
+
+- **cluster.sh** – When control-plane API collection is skipped, the warning
+  names the specific lookup that came up empty (admin username, auth service
+  URL, or password) instead of reporting all three together.
+
 ## [1.2.1] - 2026-09-06
 
 ### Fixed
