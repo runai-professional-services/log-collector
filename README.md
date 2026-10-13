@@ -369,6 +369,12 @@ Custom resources are requested by fully qualified name (`clusterpolicies.nvidia.
 
 Collects scheduler snapshots from all Run:AI scheduler deployments in the `runai` namespace. For each deployment, calls the `/get-snapshot` endpoint and saves the response.
 
+### Prerequisites
+
+- `kubectl`, configured for the intended cluster, with permission to list Deployments and port-forward to scheduler Pods
+- `curl`, `unzip`, `gzip`, and `jq`
+- A trusted local directory for sensitive scheduler diagnostics
+
 ### Usage
 
 ```bash
@@ -378,6 +384,14 @@ chmod +x ./scheduler_snapshot.sh
 
 Optional: set `RUNAI_NAMESPACE` to use a different namespace (default: `runai`).
 
+Port-forward startup is limited to 30 seconds, and each snapshot request to 120 seconds.
+Set `RUNAI_PORT_FORWARD_TIMEOUT_SECONDS` or `RUNAI_SNAPSHOT_TIMEOUT_SECONDS` to change these limits (positive integers, up to 99999 seconds).
+The script chooses an available local port, binds only to `127.0.0.1`, and bypasses HTTP proxies and curl configuration for that local request.
+
+Exit status is zero only when every discovered scheduler returns a validated snapshot.
+Discovery errors, no matching schedulers, failed port-forwards, and missing or invalid captures exit nonzero.
+Collection continues after an individual scheduler fails, retaining valid captures from other schedulers.
+
 ### What the snapshot contains
 
 - **config** – Scheduler actions and plugin tiers
@@ -386,7 +400,30 @@ Optional: set `RUNAI_NAMESPACE` to use a different namespace (default: `runai`).
 
 ### Output
 
-One gzip file per scheduler deployment: `<deployment-name>-snapshot.gzip` (e.g. `runai-scheduler-default-snapshot.gzip`).
+Each run creates a private directory named `scheduler-snapshots-<UTC-timestamp>-<random-suffix>` in the current directory.
+It contains one validated archive per successful scheduler deployment, named `<deployment-name>-snapshot.gzip`, plus a port-forward log for each attempted deployment.
+Repeated or concurrent runs use separate directories and do not overwrite earlier captures. Partial downloads are removed, and the final count includes only validated archives.
+
+The `.gzip` filename is retained for compatibility; it does not identify the encoding.
+[KAI's snapshot endpoint](https://github.com/kai-scheduler/KAI-Scheduler/blob/main/pkg/scheduler/plugins/snapshot/snapshot.go) returns a ZIP archive containing `snapshot.json`.
+The collector accepts that format and gzip-compressed JSON, checking archive integrity, exactly one `snapshot.json` ZIP entry, and exactly one JSON object with object-valued `config`, `schedulerParams`, and `rawObjects` fields.
+HTTP errors, redirects, corrupt archives, and malformed or incomplete JSON are rejected.
+
+These checks validate the downloaded artifact, not allocation correctness, freshness, or complete scheduler state.
+Port-forwarding to a Deployment can select a non-leader Pod when it has multiple replicas.
+Confirm the leader and commercial-version format with the support owner before using a capture as authoritative scheduling evidence; see [KAI's multiple-replica guidance](https://github.com/kai-scheduler/KAI-Scheduler/blob/main/docs/plugins/snapshot.md#capturing-a-snapshot-with-multiple-replicas).
+Treat snapshots and logs as sensitive diagnostics and review them before sharing.
+
+### Local validation
+
+The regression suite uses a mock `kubectl` and local HTTP fixtures; it never contacts a Kubernetes cluster or an external scheduler.
+Python 3.7 or newer is required for these tests only.
+
+```bash
+bash -n scheduler_snapshot.sh
+shellcheck scheduler_snapshot.sh
+python3 -m unittest discover -s tests -p 'test_scheduler_snapshot.py' -v
+```
 
 ---
 
