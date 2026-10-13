@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **scheduler_snapshot.sh** – Discovery and download failures could exit as a
+  success, and the final count included every discovered Deployment rather than
+  successful captures. Discovery, missing schedulers, forwarding failures, HTTP
+  errors, and invalid archives now fail explicitly; valid captures from other
+  schedulers are retained. Requests and forwarding startup have deadlines.
+- **scheduler_snapshot.sh** – Repeated runs overwrote earlier snapshots. Each
+  invocation now uses its own private directory, removes partial downloads, and
+  validates ZIP-with-`snapshot.json` or gzip JSON before publishing a file. Local
+  forwarding uses an available loopback port instead of a shared fixed port.
 - **cluster.sh** – Control-plane API collection was skipped on current Run:AI
   self-hosted backends, so `idp-settings.json`, `clusters.json`, `tenants.json`,
   and `k8s-settings.json` were never written. The admin password was read from
