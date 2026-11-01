@@ -378,6 +378,8 @@ chmod +x ./scheduler_snapshot.sh
 
 Optional: set `RUNAI_NAMESPACE` to use a different namespace (default: `runai`).
 
+The scheduler is reached over a `kubectl port-forward`. The local end of that forward is a free port picked at runtime, so it does not collide with a service already bound to the scheduler's own port on the collecting host — BCM nodes, for instance, run `cmdaemon` on 8081. Set `RUNAI_SNAPSHOT_LOCAL_PORT` to pin a specific local port instead.
+
 ### What the snapshot contains
 
 - **config** – Scheduler actions and plugin tiers

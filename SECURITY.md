@@ -48,7 +48,7 @@ Key security boundaries and interfaces:
 - **Run:AI control-plane boundary:** `cluster.sh` reads admin credentials from the `runai-backend-tenants-manager` ConfigMap/Secret and exchanges them for a bearer token with `curl` to collect IDP, cluster, tenant, and Kubernetes settings.
 - **Archive boundary:** The scripts write diagnostic files locally and package them into `.tar.gz` archives. Those archives are intended for troubleshooting and may contain sensitive operational data even when Secret values are withheld.
 - **Sensitive-data opt-in boundary:** `cluster.sh` excludes Kubernetes Secret values by default and redacts credential-looking Helm values. The `--include-sensitive-data` flag changes this behavior and writes full Secret data plus unredacted Helm values into the archive.
-- **Scheduler debug boundary:** `scheduler_snapshot.sh` uses `kubectl port-forward` to access scheduler debug snapshots on `localhost:8081`; the snapshot contains scheduler parameters and raw cluster objects used by scheduling decisions.
+- **Scheduler debug boundary:** `scheduler_snapshot.sh` uses `kubectl port-forward` to access scheduler debug snapshots over a local port forwarded to the scheduler's port 8081; the snapshot contains scheduler parameters and raw cluster objects used by scheduling decisions.
 - **Input boundary:** `workload.sh` validates `--project` and `--workload` before using them in local paths and Kubernetes lookups. `cluster.sh`, `gpu.sh`, and `scheduler_snapshot.sh` primarily derive names from Kubernetes resources and local command output.
 
 ### Threat Model
@@ -67,7 +67,7 @@ The following scenarios represent the primary security concerns for this reposit
 
 6. **Privilege Amplification Through Operator Context:** The scripts do not implement their own authorization. They perform whatever `kubectl`, `oc`, `helm`, and `curl` operations are allowed by the operator's current environment. Running these scripts with cluster-admin credentials allows broad collection across Run:AI, Knative, GPU Operator, scheduler, and workload resources; compromise of the script execution environment can therefore expose privileged cluster data.
 
-7. **Unprotected Local Scheduler Snapshot Access During Port-Forward:** `scheduler_snapshot.sh` forwards each scheduler deployment to `localhost:8081` and calls `/get-snapshot`. While intended to be local and short-lived, the forwarded endpoint temporarily exposes scheduler debug data to processes that can reach the local port on the operator workstation.
+7. **Unprotected Local Scheduler Snapshot Access During Port-Forward:** `scheduler_snapshot.sh` forwards each scheduler deployment to a local port on `127.0.0.1` and calls `/get-snapshot`. While intended to be local and short-lived, the forwarded endpoint temporarily exposes scheduler debug data to processes that can reach the local port on the operator workstation.
 
 ### Critical Security Assumptions
 
@@ -78,7 +78,7 @@ The following scenarios represent the primary security concerns for this reposit
 - **`--include-sensitive-data` is restricted to approved workflows:** Full Secret data and unredacted Helm values collected by `cluster.sh --include-sensitive-data` are assumed to be used only when necessary, with explicit review before transfer.
 - **Cluster resource names are mostly constrained by Kubernetes:** The scripts rely on Kubernetes object naming rules for many cluster-derived filenames and command arguments. Future additions that consume less constrained annotations, labels, or arbitrary file paths must validate or quote those values carefully.
 - **External command behavior is trusted:** The scripts assume installed `kubectl`, `oc`, `helm`, `curl`, `jq`, `tar`, `awk`, `sed`, `grep`, `base64`, and shell builtins are authentic and not replaced by malicious binaries in `PATH`.
-- **Localhost port-forward access is local and temporary:** `scheduler_snapshot.sh` assumes the forwarded scheduler endpoint on `localhost:8081` is reachable only by trusted local processes during the short collection window.
+- **Localhost port-forward access is local and temporary:** `scheduler_snapshot.sh` assumes the forwarded scheduler endpoint on its local port is reachable only by trusted local processes during the short collection window.
 - **No network service is exposed by this repository:** The repository contains CLI scripts, not a long-running service. Network access occurs through Kubernetes APIs, Helm, Run:AI control-plane API calls, and temporary local port-forwarding.
 - **Callers select the correct scope:** The scripts assume operators intentionally choose the cluster, project, workload, namespace, and collection mode appropriate for the support case, and avoid collecting unrelated tenant or workload data where possible.
 

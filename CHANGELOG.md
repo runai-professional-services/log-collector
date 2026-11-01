@@ -20,12 +20,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   password is now resolved from `runai-backend-credentials` (keys
   `ADMIN_PASSWORD` then `admin-password`), falling back to
   `runai-backend-tenants-manager` for older backends.
+- **scheduler_snapshot.sh** – Collection failed on any host already listening on
+  8081, because the port-forward asked for the scheduler's port number on the
+  local end too. Reported from BCM clusters, where `cmdaemon` holds 8081 on every
+  node: `kubectl port-forward` exited with `bind: address already in use`, `curl`
+  then reached whatever else owned the port, and the run still reported
+  `Done. Collected 1 snapshot(s).` and exited as a success without writing a
+  snapshot. The local end is now an ephemeral port that kubectl picks and the
+  script reads back from its output, so it cannot collide. Set
+  `RUNAI_SNAPSHOT_LOCAL_PORT` to pin it where a fixed port is required.
+- **scheduler_snapshot.sh** – A run that collected nothing finished with
+  `Done. Collected 1 snapshot(s).` and exited as a success. The closing count was
+  the number of scheduler deployments found, not the number of snapshots written,
+  so the port-forward failure above looked like a completed collection and the
+  missing snapshot was only noticed once the bundle reached support. The count is
+  now the snapshots actually saved, reported as `Collected N of M`, and a run that
+  fails to collect any of them names how many and exits non-zero. A snapshot
+  `curl` left half-written is deleted rather than kept as a truncated archive.
 
 ### Changed
 
 - **cluster.sh** – When control-plane API collection is skipped, the warning
   names the specific lookup that came up empty (admin username, auth service
   URL, or password) instead of reporting all three together.
+- **scheduler_snapshot.sh** – The script waits for the forward to report itself
+  ready rather than sleeping a fixed two seconds, and a forward that never comes
+  up is reported with kubectl's own error instead of appearing as a `curl`
+  failure against someone else's service.
 
 ## [1.2.1] - 2026-09-06
 
